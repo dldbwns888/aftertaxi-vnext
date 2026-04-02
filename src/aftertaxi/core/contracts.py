@@ -72,6 +72,7 @@ class BacktestConfig:
     strategy: StrategyConfig
     n_months: Optional[int] = None  # None이면 데이터 전체
     start_index: int = 0
+    dividend_schedule: Optional[object] = None  # DividendSchedule, None이면 배당 없음
 
 
 # ══════════════════════════════════════════════

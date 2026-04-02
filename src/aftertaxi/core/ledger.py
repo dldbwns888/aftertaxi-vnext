@@ -91,6 +91,12 @@ class AccountLedger:
         # ── 거래비용 (attribution용) ──
         self.total_transaction_cost_usd: float = 0.0
 
+        # ── 배당 (attribution용) ──
+        self.annual_dividend_gross_usd: float = 0.0
+        self.annual_dividend_withholding_usd: float = 0.0
+        self.cumulative_dividend_gross_usd: float = 0.0
+        self.cumulative_dividend_withholding_usd: float = 0.0
+
         # ── 누적 ──
         self.total_invested_usd: float = 0.0
 
@@ -112,6 +118,47 @@ class AccountLedger:
         for asset, pos in self.positions.items():
             if asset in price_map and pos.qty > 1e-12:
                 pos.market_value_usd = pos.qty * price_map[asset]
+
+    # ── 배당 처리 ──
+
+    def apply_dividend(self, asset: str, gross_per_share: float,
+                       withholding_rate: float, fx_rate: float,
+                       reinvest: bool = True, px_usd: float = 0.0) -> float:
+        """배당 이벤트 처리. Returns: net_dividend_usd.
+
+        1. 보유 수량 × gross_per_share = gross dividend
+        2. 원천징수 차감
+        3. net을 현금에 추가 (또는 재투자)
+        """
+        pos = self.positions.get(asset)
+        if pos is None or pos.qty < 1e-12:
+            return 0.0
+
+        gross_usd = pos.qty * gross_per_share
+        withholding_usd = gross_usd * withholding_rate
+        net_usd = gross_usd - withholding_usd
+
+        # 상태 갱신
+        self.annual_dividend_gross_usd += gross_usd
+        self.annual_dividend_withholding_usd += withholding_usd
+        self.cumulative_dividend_gross_usd += gross_usd
+        self.cumulative_dividend_withholding_usd += withholding_usd
+
+        if reinvest and px_usd > 0:
+            # 재투자: net으로 같은 자산 매수 (fee 적용)
+            reinvest_qty = net_usd / px_usd
+            # 직접 position에 추가 (fee는 여기선 적용 안 함 — 배당 재투자는 별도)
+            self.cash_usd += net_usd
+            self.buy(asset, reinvest_qty, px_usd, fx_rate)
+        else:
+            # 현금유지
+            self.cash_usd += net_usd
+
+        self._log("dividend", amount_usd=net_usd, asset=asset, fx_rate=fx_rate,
+                  metadata={"gross_usd": gross_usd, "withholding_usd": withholding_usd,
+                            "withholding_rate": withholding_rate, "reinvest": reinvest})
+
+        return net_usd
 
     def _log(self, event_type: str, **kwargs) -> None:
         """journal이 있으면 기록, 없으면 무시."""

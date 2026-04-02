@@ -92,6 +92,22 @@ def run_engine(
             settle_year_end(ledgers, current_year, fx_rate)
             current_year = dt.year
 
+        # 2.5 배당 처리 (schedule이 있을 때만)
+        div_schedule = config.dividend_schedule
+        if div_schedule is not None and div_schedule.is_dividend_month(step):
+            for ledger in ledgers.values():
+                for asset in list(ledger.positions.keys()):
+                    event = div_schedule.create_event(asset, price_map.get(asset, 0))
+                    if event is not None:
+                        ledger.apply_dividend(
+                            asset=event.asset,
+                            gross_per_share=event.gross_per_share_usd,
+                            withholding_rate=event.withholding_rate,
+                            fx_rate=fx_rate,
+                            reinvest=event.reinvest,
+                            px_usd=price_map.get(asset, 0),
+                        )
+
         # 3~4. 입금 + 리밸런싱/매수
         should_rebal = (step % rebal_every == 0)
 
