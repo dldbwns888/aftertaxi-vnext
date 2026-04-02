@@ -179,6 +179,9 @@ def _aggregate(ledgers: Dict[str, AccountLedger], reporting_fx: float) -> Engine
             transaction_cost_usd=s["transaction_cost_usd"],
             dividend_gross_usd=s["dividend_gross_usd"],
             dividend_withholding_usd=s["dividend_withholding_usd"],
+            capital_gains_tax_krw=s["capital_gains_tax_krw"],
+            dividend_tax_krw=s["dividend_tax_krw"],
+            health_insurance_krw=s["health_insurance_krw"],
         ))
         total_pv += s["gross_pv_usd"]
         total_inv += s["invested_usd"]

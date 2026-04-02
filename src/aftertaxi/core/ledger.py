@@ -87,6 +87,10 @@ class AccountLedger:
         self._total_tax_assessed_krw: float = 0.0
         self.unpaid_tax_liability_krw: float = 0.0
         self.loss_carryforward_krw: List[Tuple[int, float]] = []
+        # 항목별 버킷 (attribution용)
+        self._capital_gains_tax_assessed_krw: float = 0.0
+        self._dividend_tax_assessed_krw: float = 0.0
+        self._health_insurance_assessed_krw: float = 0.0
 
         # ── 거래비용 (attribution용) ──
         self.total_transaction_cost_usd: float = 0.0
@@ -287,6 +291,7 @@ class AccountLedger:
 
         # 상태 갱신 (결과 적용만)
         self._total_tax_assessed_krw += result.tax_krw
+        self._capital_gains_tax_assessed_krw += result.tax_krw
         self.unpaid_tax_liability_krw += result.tax_krw
         self.loss_carryforward_krw = (
             result.carryforward_remaining + result.new_loss_carry
@@ -347,6 +352,7 @@ class AccountLedger:
         # 추가 세금만 부과 (원천징수는 이미 차감됨)
         if result.additional_tax_krw > 0:
             self._total_tax_assessed_krw += result.additional_tax_krw
+            self._dividend_tax_assessed_krw += result.additional_tax_krw
             self.unpaid_tax_liability_krw += result.additional_tax_krw
 
         self._log("dividend_tax", amount_krw=result.additional_tax_krw,
@@ -400,6 +406,9 @@ class AccountLedger:
             "invested_usd": self.total_invested_usd,
             "tax_assessed_krw": self._total_tax_assessed_krw,
             "tax_unpaid_krw": self.unpaid_tax_liability_krw,
+            "capital_gains_tax_krw": self._capital_gains_tax_assessed_krw,
+            "dividend_tax_krw": self._dividend_tax_assessed_krw,
+            "health_insurance_krw": self._health_insurance_assessed_krw,
             "transaction_cost_usd": self.total_transaction_cost_usd,
             "dividend_gross_usd": self.cumulative_dividend_gross_usd,
             "dividend_withholding_usd": self.cumulative_dividend_withholding_usd,

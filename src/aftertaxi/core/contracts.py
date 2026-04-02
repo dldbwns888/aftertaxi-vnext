@@ -94,6 +94,10 @@ class AccountSummary:
     transaction_cost_usd: float = 0.0
     dividend_gross_usd: float = 0.0
     dividend_withholding_usd: float = 0.0
+    # 세금 항목별 버킷
+    capital_gains_tax_krw: float = 0.0
+    dividend_tax_krw: float = 0.0
+    health_insurance_krw: float = 0.0
 
     @property
     def dividend_net_usd(self) -> float:

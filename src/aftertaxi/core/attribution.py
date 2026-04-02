@@ -16,7 +16,7 @@ MVP 범위:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List
 
 from aftertaxi.core.contracts import AccountSummary, EngineResult
@@ -82,9 +82,13 @@ class ResultAttribution:
     total_dividend_gross_usd: float
     total_dividend_withholding_usd: float
     total_dividend_net_usd: float
+    # 세금 항목별 버킷
+    total_capital_gains_tax_krw: float = 0.0
+    total_dividend_tax_krw: float = 0.0
+    total_health_insurance_krw: float = 0.0
 
     # 계좌별 breakdown
-    account_attributions: List[AccountAttribution]
+    account_attributions: List[AccountAttribution] = field(default_factory=list)
 
     @property
     def mult_pre_tax(self) -> float:
@@ -170,11 +174,17 @@ def build_attribution(result: EngineResult) -> ResultAttribution:
     total_cost = 0.0
     total_div_gross = 0.0
     total_div_wh = 0.0
+    total_cg_tax = 0.0
+    total_div_tax = 0.0
+    total_hi = 0.0
 
     for a in result.accounts:
         total_cost += a.transaction_cost_usd
         total_div_gross += a.dividend_gross_usd
         total_div_wh += a.dividend_withholding_usd
+        total_cg_tax += a.capital_gains_tax_krw
+        total_div_tax += a.dividend_tax_krw
+        total_hi += a.health_insurance_krw
 
         account_attrs.append(AccountAttribution(
             account_id=a.account_id,
@@ -199,5 +209,8 @@ def build_attribution(result: EngineResult) -> ResultAttribution:
         total_dividend_gross_usd=total_div_gross,
         total_dividend_withholding_usd=total_div_wh,
         total_dividend_net_usd=total_div_gross - total_div_wh,
+        total_capital_gains_tax_krw=total_cg_tax,
+        total_dividend_tax_krw=total_div_tax,
+        total_health_insurance_krw=total_hi,
         account_attributions=account_attrs,
     )
