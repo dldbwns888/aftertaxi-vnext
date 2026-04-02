@@ -89,7 +89,8 @@ def run_engine(
 
         # 2. 연도 전환 → 세금 정산 (settlement에 위임)
         if current_year is not None and dt.year != current_year:
-            settle_year_end(ledgers, current_year, fx_rate)
+            settle_year_end(ledgers, current_year, fx_rate,
+                           enable_health_insurance=config.enable_health_insurance)
             current_year = dt.year
 
         # 2.5 배당 처리 (schedule이 있을 때만)
@@ -131,7 +132,8 @@ def run_engine(
     final_fx = _get_fx_rate(final_dt, fx_lookup)
     final_year = final_dt.year
 
-    settle_final(ledgers, final_year, final_prices, final_fx)
+    settle_final(ledgers, final_year, final_prices, final_fx,
+                 enable_health_insurance=config.enable_health_insurance)
 
     # ── 결과 집계 ──
     return _aggregate(ledgers, final_fx)

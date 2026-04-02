@@ -73,6 +73,7 @@ class BacktestConfig:
     n_months: Optional[int] = None  # None이면 데이터 전체
     start_index: int = 0
     dividend_schedule: Optional[object] = None  # DividendSchedule, None이면 배당 없음
+    enable_health_insurance: bool = False       # True면 건보료 계산 (MVP)
 
 
 # ══════════════════════════════════════════════

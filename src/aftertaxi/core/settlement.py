@@ -30,22 +30,39 @@ def settle_year_end(
     ledgers: Dict[str, AccountLedger],
     year: int,
     fx_rate: float,
+    enable_health_insurance: bool = False,
 ) -> None:
-    """연도 전환 시 정산. 모든 계좌에 대해 실행.
+    """연도 전환 시 정산.
 
     순서:
-      1. 양도소득세 정산 (연간 실현손익 → 세금 계산)
-      2. 배당소득세 정산 (연간 배당 → 종합과세 판정)
-      3. 세금 납부 (KRW → USD cash 차감)
-
-    향후 추가될 것:
-      - 건보료 (person-level로 승격 예정)
+      1. [Account] 양도소득세 정산
+      2. [Account] 배당소득세 정산 (TAXABLE만)
+      3. [Person]  건강보험료 (전 계좌 합산, opt-in)
+      4. [Account] 세금 납부
     """
+    from aftertaxi.core.tax_engine import compute_health_insurance
+
+    # 1~2. 계좌별 세금 정산
     for ledger in ledgers.values():
         ledger.settle_annual_tax(current_year=year)
-        # 배당세: TAXABLE만 (ISA는 운용 중 비과세)
         if ledger.account_type == "TAXABLE":
             ledger.settle_dividend_tax(fx_rate)
+
+    # 3. 건보료 (person scope, opt-in)
+    if enable_health_insurance:
+        total_cg_income = sum(l._last_annual_taxable_income_krw for l in ledgers.values())
+        hi_result = compute_health_insurance(
+            capital_gains_krw=total_cg_income,
+            dividend_income_krw=0.0,  # MVP: 양도차익만
+        )
+        if hi_result.premium_krw > 0:
+            for ledger in ledgers.values():
+                if ledger.account_type == "TAXABLE":
+                    ledger.apply_health_insurance(hi_result.premium_krw, fx_rate)
+                    break
+
+    # 4. 세금 납부
+    for ledger in ledgers.values():
         ledger.pay_tax(fx_rate)
 
 
@@ -54,35 +71,40 @@ def settle_final(
     year: int,
     price_map: Dict[str, float],
     fx_rate: float,
+    enable_health_insurance: bool = False,
 ) -> None:
-    """최종 청산 시 정산. 순서가 더 중요하다.
+    """최종 청산 시 정산.
 
     순서:
-      1. 전량 청산 (매도 → 실현손익)
-      2. 양도소득세 정산 (마지막 연도)
-      3. ISA 만기 정산 (해당 계좌만)
-      4. [TODO] 건보료
-      5. [TODO] 외국납부세액공제 최종 정산
-      6. 세금 납부
-      7. 최종 PV로 마지막 월 갱신
-
-    향후 추가될 것:
-      - 건보료 (person scope)
-      - 외국납부세액공제
-      - 연금 계좌 수령 시 과세
+      1. [Account] 전량 청산 → 양도세 → 배당세 → ISA
+      2. [Person]  건강보험료 (전 계좌 합산, opt-in)
+      3. [Account] 세금 납부 + 최종 PV 기록
     """
+    from aftertaxi.core.tax_engine import compute_health_insurance
+
+    # Pass 1: 계좌별 정산
     for ledger in ledgers.values():
-        # 1. 전량 청산
         ledger.liquidate(price_map, fx_rate)
-        # 2. 양도소득세 정산
         ledger.settle_annual_tax(current_year=year)
-        # 3. 배당소득세 정산 (TAXABLE만)
         if ledger.account_type == "TAXABLE":
             ledger.settle_dividend_tax(fx_rate)
-        # 4. ISA 만기 정산
         if ledger.isa_exempt_limit > 0:
             ledger.settle_isa()
-        # 5. 세금 납부
+
+    # Pass 2: 건보료 (person scope, opt-in)
+    if enable_health_insurance:
+        total_cg_income = sum(l._last_annual_taxable_income_krw for l in ledgers.values())
+        hi_result = compute_health_insurance(
+            capital_gains_krw=total_cg_income,
+            dividend_income_krw=0.0,
+        )
+        if hi_result.premium_krw > 0:
+            for ledger in ledgers.values():
+                if ledger.account_type == "TAXABLE":
+                    ledger.apply_health_insurance(hi_result.premium_krw, fx_rate)
+                    break
+
+    # Pass 3: 납부 + 기록
+    for ledger in ledgers.values():
         ledger.pay_tax(fx_rate)
-        # 6. 최종 PV 기록
         ledger.record_month(replace_last=True)

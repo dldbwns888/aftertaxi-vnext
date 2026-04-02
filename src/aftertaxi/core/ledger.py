@@ -91,6 +91,8 @@ class AccountLedger:
         self._capital_gains_tax_assessed_krw: float = 0.0
         self._dividend_tax_assessed_krw: float = 0.0
         self._health_insurance_assessed_krw: float = 0.0
+        # 건보료 계산용 (settle_annual_tax가 저장, settlement가 소비)
+        self._last_annual_taxable_income_krw: float = 0.0
 
         # ── 거래비용 (attribution용) ──
         self.total_transaction_cost_usd: float = 0.0
@@ -298,6 +300,8 @@ class AccountLedger:
         )
         self.annual_realized_gain_krw = 0.0
         self.annual_realized_loss_krw = 0.0
+        # 건보료 계산용: 올해 양도차익 (이월결손금 상쇄 후, 공제 전)
+        self._last_annual_taxable_income_krw = result.net_gain_before_exemption
         # NOTE: annual_dividend_*는 settle_dividend_tax()에서 리셋 (순서 의존)
 
         self._log("tax_assessed", amount_krw=result.tax_krw,
@@ -366,6 +370,26 @@ class AccountLedger:
         self.annual_dividend_withholding_usd = 0.0
 
         return result.additional_tax_krw
+
+    # ── 건강보험료 적용 ──
+
+    def apply_health_insurance(self, premium_krw: float, fx_rate: float) -> float:
+        """건강보험료 부과. person scope에서 계산된 금액을 적용.
+
+        건보료는 세금과 별도 버킷이지만, 납부는 unpaid_tax_liability에 합산.
+        (실제로는 별도 납부이지만, 엔진에서는 cash drag로 통합 처리)
+        """
+        if premium_krw < 1e-8:
+            return 0.0
+
+        self._health_insurance_assessed_krw += premium_krw
+        self._total_tax_assessed_krw += premium_krw
+        self.unpaid_tax_liability_krw += premium_krw
+
+        self._log("health_insurance", amount_krw=premium_krw, fx_rate=fx_rate,
+                  metadata={"premium_krw": premium_krw})
+
+        return premium_krw
 
     # ── 세금 납부 (KRW → USD 차감) ──
 
