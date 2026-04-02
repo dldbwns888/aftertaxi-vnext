@@ -29,22 +29,6 @@ from aftertaxi.core.attribution import build_attribution
 
 
 # ══════════════════════════════════════════════
-# 합성 데이터 생성 (데모용)
-# ══════════════════════════════════════════════
-
-def _generate_data(assets, n_months=240, growth=0.08, vol=0.16, fx=1300.0, seed=42):
-    rng = np.random.default_rng(seed)
-    idx = pd.date_range("2005-01-31", periods=n_months, freq="ME")
-    mu = growth / 12
-    sigma = vol / np.sqrt(12)
-    data = {a: rng.normal(mu, sigma, n_months) for a in assets}
-    returns = pd.DataFrame(data, index=idx)
-    prices = 100.0 * (1 + returns).cumprod()
-    fx_s = pd.Series(fx, index=idx)
-    return returns, prices, fx_s
-
-
-# ══════════════════════════════════════════════
 # 파라미터 폼 렌더 (metadata 기반)
 # ══════════════════════════════════════════════
 
@@ -150,13 +134,32 @@ def main():
 
         st.divider()
 
-        # ── 실행 설정 ──
-        st.header("실행 설정")
-        n_months = st.slider("기간 (월)", 12, 600, 240)
-        fx_rate = st.number_input("환율 (KRW/USD)", value=1300.0, step=10.0)
-        growth = st.slider("합성 데이터 연 성장률", 0.0, 0.20, 0.08)
-        vol = st.slider("합성 데이터 연 변동성", 0.05, 0.40, 0.16)
-        seed = st.number_input("시드", value=42, step=1)
+        # ── 데이터 소스 ──
+        st.header("데이터")
+        data_source = st.selectbox(
+            "데이터 소스",
+            ["synthetic", "yfinance", "yfinance_fx"],
+            format_func=lambda x: {
+                "synthetic": "합성 데이터 (데모)",
+                "yfinance": "실제 ETF (yfinance, FX 고정)",
+                "yfinance_fx": "실제 ETF + 실제 FX (yfinance)",
+            }[x],
+        )
+
+        # 소스별 옵션
+        if data_source == "synthetic":
+            n_months = st.slider("기간 (월)", 12, 600, 240)
+            fx_rate = st.number_input("환율 (KRW/USD)", value=1300.0, step=10.0)
+            growth = st.slider("연 성장률", 0.0, 0.20, 0.08)
+            vol = st.slider("연 변동성", 0.05, 0.40, 0.16)
+            seed = st.number_input("시드", value=42, step=1)
+        else:
+            start_date = st.text_input("시작일", "2006-06-01")
+            fx_rate = 1300.0
+            if data_source == "yfinance":
+                fx_rate = st.number_input("고정 환율", value=1300.0, step=10.0)
+            n_months = None  # 실제 데이터는 가용 기간만큼
+            seed = 42
 
         # Lane D
         lane_d = st.checkbox("Lane D 생존 시뮬레이션")
@@ -186,13 +189,43 @@ def main():
 
     # ── 실행 ──
     if st.button("백테스트 실행", type="primary", use_container_width=True):
-        with st.spinner("엔진 실행 중..."):
+        with st.spinner("데이터 로드 + 엔진 실행 중..."):
             config = compile_backtest(draft.to_dict())
             assets = list(config.strategy.weights.keys())
-            returns, prices, fx = _generate_data(
-                assets, n_months=n_months, growth=growth,
-                vol=vol, fx=fx_rate, seed=int(seed),
-            )
+
+            from aftertaxi.apps.data_provider import load_market_data
+
+            try:
+                if data_source == "synthetic":
+                    market = load_market_data(
+                        assets, source="synthetic",
+                        n_months=n_months, annual_growth=growth,
+                        annual_vol=vol, fx_rate=fx_rate, seed=int(seed),
+                    )
+                elif data_source == "yfinance":
+                    market = load_market_data(
+                        assets, source="yfinance",
+                        start=start_date, fx_rate=fx_rate,
+                    )
+                elif data_source == "yfinance_fx":
+                    market = load_market_data(
+                        assets, source="yfinance_fx",
+                        start=start_date,
+                    )
+                else:
+                    st.error(f"Unknown source: {data_source}")
+                    return
+            except Exception as e:
+                st.error(f"데이터 로드 실패: {e}")
+                return
+
+            returns = market.returns
+            prices = market.prices
+            fx = market.fx
+
+            st.info(f"📊 {market.source} | {market.n_months}개월 | "
+                    f"{market.start_date:%Y-%m} ~ {market.end_date:%Y-%m}")
+
             result = run_backtest(config, returns=returns, prices=prices, fx_rates=fx)
             attribution = build_attribution(result)
 
