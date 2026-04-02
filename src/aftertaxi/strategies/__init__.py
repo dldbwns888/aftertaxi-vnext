@@ -20,4 +20,5 @@ strategies/ — 전략 등록소
 # builders를 import하면 @registry.register가 실행되어 빌더가 등록됨
 from aftertaxi.strategies.registry import registry
 from aftertaxi.strategies.spec import StrategySpec
+from aftertaxi.strategies.compile import compile_strategy, compile_backtest
 import aftertaxi.strategies.builders  # noqa: F401 — 등록 트리거
