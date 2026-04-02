@@ -131,9 +131,10 @@ class ComparisonResult:
         # caveat
         lines.append("")
         lines.append("═══ Caveats ═══")
-        lines.append("• yfinance Close = split-adjusted (v1.2). 버전에 따라 의미 다를 수 있음")
+        lines.append("• adjusted: yfinance Close (배당 반영, 4소스 교차 비교로 확인)")
+        lines.append("• explicit: AV/FMP close (배당 미반영) + FRED FX + DividendSchedule")
         lines.append("• DividendSchedule은 평균 yield 기반 근사 (분기별 금액 변동 미반영)")
-        lines.append("• explicit path의 원천징수가 배당 재투자 수량을 줄여 compound 효과에 영향")
+        lines.append("• explicit의 원천징수 15%가 재투자 수량을 줄여 compound 효과에 영향")
 
         return "\n".join(lines)
 
@@ -147,10 +148,13 @@ def compare_price_modes(
     transaction_cost_bps: float = 0.0,
     enable_health_insurance: bool = False,
     cache_dir=None,
+    av_key: Optional[str] = None,
+    fred_key: Optional[str] = None,
 ) -> ComparisonResult:
-    """adjusted vs explicit dividend path 비교 실행.
+    """adjusted(yfinance) vs explicit(AV+FRED) 비교.
 
-    같은 구간, 같은 전략, 같은 설정. 가격/배당 입력만 다름.
+    adjusted: yfinance Close (배당 반영) + no dividend_schedule
+    explicit: AV close (배당 미반영) + FRED FX + dividend_schedule
     """
     weights = {t: 1.0 / len(tickers) for t in tickers}
     strategy = StrategyConfig(strategy_name, weights)
@@ -160,13 +164,12 @@ def compare_price_modes(
         transaction_cost_bps=transaction_cost_bps,
     )
 
-    # ── ADJUSTED path ──
+    # ── ADJUSTED path (yfinance, 배당이 가격에 포함) ──
     adj_data = load_lane_a(tickers, start=start, end=end, cache_dir=cache_dir)
     adj_config = BacktestConfig(
         accounts=[account],
         strategy=strategy,
         enable_health_insurance=enable_health_insurance,
-        # dividend_schedule 없음 → adjusted close에 배당 포함
     )
     adj_result = run_backtest(
         adj_config,
@@ -175,9 +178,10 @@ def compare_price_modes(
         fx_rates=adj_data["fx_rates"],
     )
 
-    # ── EXPLICIT path ──
+    # ── EXPLICIT path (AV close + FRED FX + dividend_schedule) ──
     exp_data = load_lane_a_explicit(
-        tickers, start=start, end=end, cache_dir=cache_dir,
+        tickers, start=start, end=end,
+        av_key=av_key, fred_key=fred_key,
     )
     exp_config = BacktestConfig(
         accounts=[account],

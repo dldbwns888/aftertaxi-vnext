@@ -254,35 +254,75 @@ def load_lane_a_explicit(
     tickers: List[str],
     start: str = "2006-06-01",
     end: Optional[str] = None,
-    cache_dir: Optional[Path] = None,
     withholding_rate: float = 0.15,
     reinvest: bool = True,
+    source: str = "alphavantage",
+    av_key: Optional[str] = None,
+    fmp_key: Optional[str] = None,
+    fred_key: Optional[str] = None,
 ):
     """Lane A 데이터 일괄 로드 (EXPLICIT_DIVIDENDS 모드).
 
-    가격은 split-adjusted close (배당 미반영).
-    배당은 별도 DividendSchedule로 반환.
+    가격은 배당 미반영 close (Alpha Vantage 또는 FMP).
+    배당은 별도 DividendSchedule.
+    FX는 FRED DEXKOUS.
 
-    Returns
-    -------
-    LaneAData with price_mode=EXPLICIT_DIVIDENDS
+    ⚠ yfinance Close는 배당이 반영되어 있으므로 사용 금지.
+       (4소스 교차 비교로 확인: yfinance Close = AV adjusted_close)
 
-    Note
-    ----
-    yfinance Close 컬럼은 최근 버전(2.x)에서 split-adjusted,
-    배당 미반영. 이전 버전에서는 adjusted close일 수 있으므로
-    버전 확인 필요.
+    Parameters
+    ----------
+    source : "alphavantage" | "fmp" — 가격/배당 소스
+    av_key : Alpha Vantage API key (source="alphavantage"일 때)
+    fmp_key : FMP API key (source="fmp"일 때)
+    fred_key : FRED API key (FX용)
     """
     from aftertaxi.lanes.lane_a.data_contract import (
         PriceMode, LaneAData, build_dividend_schedule_from_history,
     )
+    from aftertaxi.loaders.fred import load_fx_fred
 
-    prices = load_prices(tickers, start=start, end=end, cache_dir=cache_dir)
-    fx_rates = load_fx_rates(start=start, end=end, cache_dir=cache_dir)
-    dividends = load_dividends(tickers, start=start, end=end, cache_dir=cache_dir)
+    # 가격 + 배당: AV 또는 FMP
+    if source == "alphavantage":
+        if not av_key:
+            raise ValueError("Alpha Vantage API key 필요 (av_key)")
+        from aftertaxi.loaders.alphavantage import load_prices_alphavantage
+        av = load_prices_alphavantage(tickers, av_key, start=start, end=end)
+        prices = av["close"]          # 배당 미반영!
+        dividends = av["dividends"]
 
-    # 공통 인덱스 정렬
+    elif source == "fmp":
+        if not fmp_key:
+            raise ValueError("FMP API key 필요 (fmp_key)")
+        from aftertaxi.loaders.fmp import load_prices_fmp, load_dividends_fmp
+        fmp = load_prices_fmp(tickers, fmp_key, start=start, end=end)
+        prices = fmp["close"]         # 배당 미반영!
+        # FMP dividends → 월별 합산
+        fmp_divs = load_dividends_fmp(tickers, fmp_key)
+        div_frames = {}
+        for ticker, df in fmp_divs.items():
+            if len(df) > 0:
+                filtered = df
+                if start:
+                    filtered = filtered[filtered["ex_date"] >= start]
+                if end:
+                    filtered = filtered[filtered["ex_date"] <= end]
+                s = filtered.set_index("ex_date")["amount"]
+                s.index = s.index + pd.offsets.MonthEnd(0)
+                div_frames[ticker] = s.groupby(s.index).sum()
+        dividends = pd.DataFrame(div_frames).fillna(0.0) if div_frames else pd.DataFrame()
+    else:
+        raise ValueError(f"지원하지 않는 source: {source}. 'alphavantage' 또는 'fmp' 사용")
+
+    # FX: FRED
+    if not fred_key:
+        raise ValueError("FRED API key 필요 (fred_key)")
+    fx_rates = load_fx_fred(fred_key, start=start, end=end)
+
+    # 공통 인덱스
     common_idx = prices.index.intersection(fx_rates.index)
+    if len(common_idx) == 0:
+        raise ValueError("가격과 FX의 공통 기간이 없음")
     prices = prices.loc[common_idx]
     fx_rates = fx_rates.loc[common_idx]
     returns = prices.pct_change().fillna(0.0)
