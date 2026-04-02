@@ -30,6 +30,7 @@ from aftertaxi.core.contracts import (
     EngineResult, RebalanceMode, TaxSummary,
 )
 from aftertaxi.core.ledger import AccountLedger
+from aftertaxi.core.settlement import settle_year_end, settle_final
 
 
 def run_engine(
@@ -82,11 +83,9 @@ def run_engine(
         for ledger in ledgers.values():
             ledger.mark_to_market(price_map)
 
-        # 2. 연도 전환 → 세금 정산
+        # 2. 연도 전환 → 세금 정산 (settlement에 위임)
         if current_year is not None and dt.year != current_year:
-            for ledger in ledgers.values():
-                ledger.settle_annual_tax(current_year=current_year)
-                ledger.pay_tax(fx_rate)
+            settle_year_end(ledgers, current_year, fx_rate)
             current_year = dt.year
 
         # 3~4. 입금 + 리밸런싱/매수
@@ -105,25 +104,14 @@ def run_engine(
         for ledger in ledgers.values():
             ledger.record_month()
 
-    # ── 최종 청산 ──
+    # ── 최종 청산 (settlement에 위임) ──
     final_i = min(start + n - 1, len(index) - 1)
     final_dt = index[final_i]
     final_prices = {k: v for k, v in prices.iloc[final_i].to_dict().items() if v == v}
     final_fx = _get_fx_rate(final_dt, fx_lookup)
     final_year = final_dt.year
 
-    for ledger in ledgers.values():
-        # 1. 전량 청산
-        ledger.liquidate(final_prices, final_fx)
-        # 2. 세금 정산 (마지막 연도)
-        ledger.settle_annual_tax(current_year=final_year)
-        # 3. ISA 만기 정산
-        if ledger.isa_exempt_limit > 0:
-            ledger.settle_isa()
-        # 4. 세금 납부
-        ledger.pay_tax(final_fx)
-        # 5. 최종 PV로 마지막 월 갱신
-        ledger.record_month(replace_last=True)
+    settle_final(ledgers, final_year, final_prices, final_fx)
 
     # ── 결과 집계 ──
     return _aggregate(ledgers, final_fx)
