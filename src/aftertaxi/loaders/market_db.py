@@ -224,6 +224,54 @@ class MarketDB:
         self.conn.commit()
         return n
 
+    def ingest_fmp(self, tickers: List[str], api_key: str,
+                    start: Optional[str] = None, end: Optional[str] = None) -> int:
+        """FMP → DB. close + adjusted_close + dividends."""
+        from aftertaxi.loaders.fmp import load_prices_fmp, load_dividends_fmp
+
+        prices = load_prices_fmp(tickers, api_key, start=start, end=end)
+        divs = load_dividends_fmp(tickers, api_key)
+
+        n = 0
+        for ticker in tickers:
+            if ticker in prices["close"].columns:
+                close_s = prices["close"][ticker].dropna()
+                adj_s = prices["adjusted_close"].get(ticker, pd.Series(dtype=float)).dropna()
+
+                for dt in close_s.index:
+                    date_str = dt.strftime("%Y-%m-%d")
+                    c = float(close_s.loc[dt])
+                    a = float(adj_s.loc[dt]) if dt in adj_s.index else None
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO prices (date, ticker, source, close, adjusted_close) "
+                        "VALUES (?, ?, 'fmp', ?, ?)",
+                        (date_str, ticker, c, a),
+                    )
+                    n += 1
+
+            if ticker in divs and len(divs[ticker]) > 0:
+                df = divs[ticker]
+                # 날짜 필터
+                if start:
+                    df = df[df["ex_date"] >= start]
+                if end:
+                    df = df[df["ex_date"] <= end]
+                for _, row in df.iterrows():
+                    if row["amount"] > 0:
+                        self.conn.execute(
+                            "INSERT OR REPLACE INTO dividends "
+                            "(ex_date, ticker, source, amount, pay_date, record_date, declaration_date) "
+                            "VALUES (?, ?, 'fmp', ?, ?, ?, ?)",
+                            (row["ex_date"].strftime("%Y-%m-%d"), ticker, row["amount"],
+                             row.get("pay_date", ""), row.get("record_date", ""),
+                             row.get("declaration_date", "")),
+                        )
+
+            self._log("fmp", ticker, "prices", n, None, None)
+
+        self.conn.commit()
+        return n
+
     # ══════════════════════════════════════════════
     # Query: DB → Engine
     # ══════════════════════════════════════════════
@@ -231,9 +279,9 @@ class MarketDB:
     def get_prices(self, ticker: str, source: Optional[str] = None,
                    start: Optional[str] = None, end: Optional[str] = None,
                    ) -> pd.DataFrame:
-        """가격 조회. source=None이면 우선순위: alphavantage > eodhd > yfinance."""
+        """가격 조회. source=None이면 우선순위: alphavantage > fmp > eodhd > yfinance."""
         if source is None:
-            for s in ["alphavantage", "eodhd", "yfinance"]:
+            for s in ["alphavantage", "fmp", "eodhd", "yfinance"]:
                 df = self.get_prices(ticker, source=s, start=start, end=end)
                 if len(df) > 0:
                     return df
