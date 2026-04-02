@@ -25,7 +25,7 @@ from aftertaxi.core.contracts import (
     AccountConfig, AccountType, BacktestConfig,
     EngineResult, RebalanceMode, StrategyConfig,
 )
-from aftertaxi.core.runner import run_engine
+from aftertaxi.core.facade import run_backtest
 from aftertaxi.lanes.lane_c.bootstrap import (
     BootstrapConfig, circular_block_bootstrap,
 )
@@ -187,4 +187,4 @@ def _run_single_path(
         start_index=0,
     )
 
-    return run_engine(path_config, prices, fx_rates)
+    return run_backtest(path_config, returns=returns, prices=prices, fx_rates=fx_rates)
