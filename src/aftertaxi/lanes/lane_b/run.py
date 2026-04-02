@@ -159,14 +159,7 @@ def calibrate_overlap(
     lane_a_result: EngineResult,
     lane_b_result: EngineResult,
 ) -> OverlapCalibration:
-    """동일 기간 Lane A vs Lane B 비교.
-
-    사용법:
-        # 같은 기간으로 Lane A, Lane B 각각 실행 후:
-        cal = calibrate_overlap(lane_a_result, lane_b_result)
-        print(f"합성 오차: {cal.gap_pct:.1f}%")
-        print(f"Haircut: {cal.haircut_factor:.3f}")
-    """
+    """동일 기간 Lane A vs Lane B 비교."""
     a_mult = lane_a_result.mult_pre_tax
     b_mult = lane_b_result.mult_pre_tax
     gap = b_mult - a_mult
@@ -181,3 +174,134 @@ def calibrate_overlap(
         lane_a_mdd=lane_a_result.mdd,
         lane_b_mdd=lane_b_result.mdd,
     )
+
+
+# ══════════════════════════════════════════════
+# Structural Analysis (Long-History)
+# ══════════════════════════════════════════════
+
+@dataclass
+class StructuralReport:
+    """Lane B 장기 구조 분석 결과.
+
+    질문: "이 전략이 장기적으로 구조적 생존성이 있는가?"
+    """
+    total_months: int
+    total_mult: float              # 전체 기간 세전 배수
+    total_mdd: float
+
+    # 롤링 20년 분석
+    rolling_window_months: int
+    n_windows: int
+    rolling_median_mult: float
+    rolling_p5_mult: float
+    rolling_p95_mult: float
+    rolling_win_rate: float        # mult > 1 비율
+    rolling_worst_mult: float
+    rolling_mults: np.ndarray      # 전체 배열
+
+    def summary_text(self) -> str:
+        return (
+            f"═══ Lane B Structural ({self.total_months}mo) ═══\n"
+            f"  전체: {self.total_mult:.2f}x, MDD {self.total_mdd:.1%}\n"
+            f"  롤링 {self.rolling_window_months // 12}yr: "
+            f"중앙 {self.rolling_median_mult:.2f}x, "
+            f"5% {self.rolling_p5_mult:.2f}x, "
+            f"승률 {self.rolling_win_rate:.0%}, "
+            f"최악 {self.rolling_worst_mult:.2f}x\n"
+            f"  ({self.n_windows}개 윈도우)"
+        )
+
+
+def run_lane_b_structural(
+    weights: Dict[str, float],
+    synthetic_map: Dict[str, SyntheticParams],
+    monthly_usd: float = 1000.0,
+    start: str = "1987-01-01",
+    end: Optional[str] = None,
+    fx_rate: float = 1300.0,
+    rolling_years: int = 20,
+    strategy_name: str = "lane_b_structural",
+    index_ticker: str = "^SP500TR",
+    tbill_ticker: str = "^IRX",
+) -> StructuralReport:
+    """Lane B 장기 구조 분석.
+
+    전체 기간 백테스트 + 롤링 N년 윈도우 배수 분포.
+    """
+    # 전체 기간 실행
+    full_result = run_lane_b(
+        weights=weights,
+        synthetic_map=synthetic_map,
+        monthly_usd=monthly_usd,
+        start=start, end=end,
+        fx_rate=fx_rate,
+        strategy_name=strategy_name,
+        index_ticker=index_ticker,
+        tbill_ticker=tbill_ticker,
+    )
+
+    # 롤링 윈도우 분석
+    mv = full_result.monthly_values
+    window = rolling_years * 12
+    rolling_mults = []
+
+    if len(mv) > window:
+        for i in range(window, len(mv)):
+            start_val = mv[i - window]
+            end_val = mv[i]
+            if start_val > 0:
+                invested_in_window = monthly_usd * window
+                mult = end_val / (start_val + invested_in_window / 2)  # 근사
+                rolling_mults.append(mult)
+
+    if not rolling_mults:
+        # 데이터 부족 시 전체 배수만
+        rolling_mults = [full_result.mult_pre_tax]
+
+    rm = np.array(rolling_mults)
+
+    return StructuralReport(
+        total_months=full_result.n_months,
+        total_mult=full_result.mult_pre_tax,
+        total_mdd=full_result.mdd,
+        rolling_window_months=window,
+        n_windows=len(rm),
+        rolling_median_mult=float(np.median(rm)),
+        rolling_p5_mult=float(np.percentile(rm, 5)),
+        rolling_p95_mult=float(np.percentile(rm, 95)),
+        rolling_win_rate=float(np.mean(rm > 1.0)),
+        rolling_worst_mult=float(np.min(rm)),
+        rolling_mults=rm,
+    )
+
+
+# ══════════════════════════════════════════════
+# CalibrationReport (2-mode 통합)
+# ══════════════════════════════════════════════
+
+@dataclass
+class CalibrationReport:
+    """Lane B 2-mode 통합 리포트.
+
+    Mode 1 (Overlap): Lane A와 겹치는 구간에서 합성 오차 정량화.
+    Mode 2 (Structural): 전체 장기 역사에서 구조적 생존성 평가.
+    """
+    overlap: Optional[OverlapCalibration] = None
+    structural: Optional[StructuralReport] = None
+
+    def summary_text(self) -> str:
+        lines = ["═══ Lane B CalibrationReport ═══"]
+        if self.overlap:
+            lines.append(f"\n  [Overlap] {self.overlap.overlap_months}mo")
+            lines.append(f"    A={self.overlap.lane_a_mult:.2f}x, "
+                         f"B={self.overlap.lane_b_mult:.2f}x, "
+                         f"gap={self.overlap.gap_pct:+.1f}%")
+            lines.append(f"    haircut={self.overlap.haircut_factor:.3f}")
+        if self.structural:
+            lines.append(f"\n  [Structural] {self.structural.total_months}mo")
+            lines.append(f"    전체 {self.structural.total_mult:.2f}x")
+            lines.append(f"    롤링 {self.structural.rolling_window_months//12}yr: "
+                         f"중앙 {self.structural.rolling_median_mult:.2f}x, "
+                         f"승률 {self.structural.rolling_win_rate:.0%}")
+        return "\n".join(lines)

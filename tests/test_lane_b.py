@@ -167,3 +167,46 @@ class TestLaneBLive:
         # 1x 합성 vs 실제 SPY: 괴리가 ±20% 이내여야 합리적
         assert abs(cal.gap_pct) < 20.0, f"A/B gap too large: {cal.gap_pct:.1f}%"
         assert cal.overlap_months >= 100
+
+
+# ══════════════════════════════════════════════
+# Structural Analysis
+# ══════════════════════════════════════════════
+
+class TestStructuralReport:
+
+    def test_report_fields(self):
+        from aftertaxi.lanes.lane_b.run import StructuralReport
+        r = StructuralReport(
+            total_months=240, total_mult=5.0, total_mdd=-0.3,
+            rolling_window_months=240, n_windows=100,
+            rolling_median_mult=3.5, rolling_p5_mult=1.2,
+            rolling_p95_mult=8.0, rolling_win_rate=0.95,
+            rolling_worst_mult=0.8, rolling_mults=np.ones(100) * 3.5,
+        )
+        assert r.total_mult == 5.0
+        assert r.rolling_win_rate == 0.95
+        text = r.summary_text()
+        assert "Structural" in text
+        assert "20yr" in text
+
+    def test_calibration_report(self):
+        from aftertaxi.lanes.lane_b.run import CalibrationReport
+        cr = CalibrationReport()
+        assert cr.overlap is None
+        assert cr.structural is None
+        text = cr.summary_text()
+        assert "CalibrationReport" in text
+
+    def test_calibration_report_with_overlap(self):
+        from aftertaxi.lanes.lane_b.run import CalibrationReport, OverlapCalibration
+        cr = CalibrationReport(
+            overlap=OverlapCalibration(
+                overlap_months=120, lane_a_mult=2.5, lane_b_mult=2.8,
+                gap_mult=0.3, gap_pct=12.0,
+                lane_a_mdd=-0.2, lane_b_mdd=-0.15,
+            )
+        )
+        text = cr.summary_text()
+        assert "Overlap" in text
+        assert "haircut" in text
