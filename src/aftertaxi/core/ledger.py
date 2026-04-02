@@ -293,6 +293,8 @@ class AccountLedger:
         )
         self.annual_realized_gain_krw = 0.0
         self.annual_realized_loss_krw = 0.0
+        self.annual_dividend_gross_usd = 0.0
+        self.annual_dividend_withholding_usd = 0.0
 
         self._log("tax_assessed", amount_krw=result.tax_krw,
                   metadata={"taxable_base": result.taxable_base_krw,

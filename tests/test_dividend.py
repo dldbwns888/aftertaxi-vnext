@@ -129,6 +129,27 @@ class TestLedgerDividend:
         assert abs(divs[0].metadata["gross_usd"] - 10.0) < 0.01
         assert abs(divs[0].metadata["withholding_usd"] - 1.5) < 0.01
 
+    def test_annual_dividend_resets_on_settle(self):
+        """연말 정산 시 annual 배당 카운터 리셋, cumulative는 유지."""
+        ledger = AccountLedger("t", tax_rate=0.22, annual_exemption=0)
+        ledger.cash_usd = 100000
+        ledger.buy("SPY", 100, 100, 1300)
+
+        # 배당 2번
+        ledger.apply_dividend("SPY", 1.0, 0.15, 1300, reinvest=False)
+        ledger.apply_dividend("SPY", 1.0, 0.15, 1300, reinvest=False)
+        assert abs(ledger.annual_dividend_gross_usd - 200) < 0.01
+        assert abs(ledger.cumulative_dividend_gross_usd - 200) < 0.01
+
+        # 연말 정산
+        ledger.settle_annual_tax(current_year=2023)
+
+        # annual 리셋, cumulative 유지
+        assert ledger.annual_dividend_gross_usd == 0.0
+        assert ledger.annual_dividend_withholding_usd == 0.0
+        assert abs(ledger.cumulative_dividend_gross_usd - 200) < 0.01
+        assert abs(ledger.cumulative_dividend_withholding_usd - 30) < 0.01
+
 
 # ══════════════════════════════════════════════
 # 통합: facade 경유 배당
