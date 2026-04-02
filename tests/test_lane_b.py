@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from aftertaxi.core.contracts import EngineResult
+from aftertaxi.core.contracts import EngineResult, PersonSummary
 from aftertaxi.lanes.lane_b.synthetic import (
     SyntheticParams, synthesize_leveraged_returns, returns_to_prices,
 )
@@ -82,7 +82,7 @@ class TestOverlapCalibration:
 
     def _make_mock_result(self, pv=2000, inv=1000, mdd=-0.1):
         from aftertaxi.core.contracts import (
-            AccountSummary, TaxSummary,
+            AccountSummary, PersonSummary, TaxSummary,
         )
         return EngineResult(
             gross_pv_usd=pv, invested_usd=inv,
@@ -91,6 +91,7 @@ class TestOverlapCalibration:
             n_months=24, n_accounts=1,
             tax=TaxSummary(0, 0, 0),
             accounts=[AccountSummary("t", "TAXABLE", pv, inv, 0, 0, mdd, 24)],
+            person=PersonSummary(),
             monthly_values=np.ones(24) * pv,
         )
 

@@ -12,7 +12,7 @@ import pytest
 
 from aftertaxi.core.contracts import (
     AccountConfig, AccountSummary, AccountType, BacktestConfig,
-    EngineResult, RebalanceMode, StrategyConfig, TaxSummary,
+    EngineResult, PersonSummary, RebalanceMode, StrategyConfig, TaxSummary,
 )
 from aftertaxi.core.dividend import DividendSchedule
 from aftertaxi.core.event_journal import EventJournal
@@ -119,6 +119,7 @@ class TestBuildAttribution:
                 dividend_gross_usd=div_gross,
                 dividend_withholding_usd=div_wh,
             )],
+            person=PersonSummary(),
             monthly_values=np.ones(24) * 25000,
         )
 
@@ -157,7 +158,7 @@ class TestBuildAttribution:
             reporting_fx_rate=1300, mdd=0,
             n_months=0, n_accounts=0,
             tax=TaxSummary(0, 0, 0),
-            accounts=[], monthly_values=np.array([]),
+            accounts=[], person=PersonSummary(), monthly_values=np.array([]),
         )
         attr = build_attribution(result)
         assert attr.cost_drag_pct == 0.0

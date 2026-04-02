@@ -12,7 +12,7 @@ import pytest
 
 from aftertaxi.core.contracts import (
     AccountConfig, AccountSummary, AccountType, BacktestConfig,
-    EngineResult, RebalanceMode, StrategyConfig, TaxConfig, TaxSummary,
+    EngineResult, PersonSummary, RebalanceMode, StrategyConfig, TaxConfig, TaxSummary,
 )
 
 
@@ -60,6 +60,7 @@ class TestEngineResultInvariants:
                 mdd=-0.1,
                 n_months=24,
             )],
+            person=PersonSummary(),
             monthly_values=np.ones(24) * pv,
         )
 
@@ -89,7 +90,7 @@ class TestEngineResultInvariants:
                 reporting_fx_rate=1300,
                 mdd=-0.1, n_months=24, n_accounts=1,
                 tax=TaxSummary(0, 0, 0),
-                accounts=[], monthly_values=np.array([]),
+                accounts=[], person=PersonSummary(), monthly_values=np.array([]),
             )
 
     def test_net_krw_invariant_violation(self):
@@ -102,7 +103,7 @@ class TestEngineResultInvariants:
                 reporting_fx_rate=1300,
                 mdd=-0.1, n_months=24, n_accounts=1,
                 tax=TaxSummary(0, 0, 0),
-                accounts=[], monthly_values=np.array([]),
+                accounts=[], person=PersonSummary(), monthly_values=np.array([]),
             )
 
 
@@ -199,3 +200,43 @@ class TestInputValidation:
     def test_cap_equal_monthly_ok(self):
         c = AccountConfig("t", AccountType.ISA, 1000.0, annual_cap=1000.0)
         assert c.annual_cap == 1000.0
+
+
+class TestPersonSummary:
+    def test_person_exists(self):
+        from tests.helpers import make_engine_result
+        r = make_engine_result()
+        assert hasattr(r, "person")
+        assert isinstance(r.person, PersonSummary)
+
+    def test_person_hi_equals_account_sum(self):
+        """권위: result.person.health_insurance_krw == sum(accounts)."""
+        from tests.helpers import make_engine_result
+        r = make_engine_result(health_insurance_krw=50000.0)
+        assert r.person.health_insurance_krw == sum(
+            a.health_insurance_krw for a in r.accounts
+        )
+
+    def test_person_hi_zero_default(self):
+        from tests.helpers import make_engine_result
+        r = make_engine_result()
+        assert r.person.health_insurance_krw == 0.0
+
+    def test_person_from_engine(self):
+        """실제 엔진 결과에도 person이 있다."""
+        import pandas as pd
+        from aftertaxi.core.facade import run_backtest
+        idx = pd.date_range("2024-01-31", periods=12, freq="ME")
+        prices = pd.DataFrame({"SPY": [100]*12}, index=idx)
+        fx = pd.Series(1300.0, index=idx)
+        returns = prices.pct_change().fillna(0.0)
+
+        result = run_backtest(
+            BacktestConfig(
+                accounts=[AccountConfig("t", AccountType.TAXABLE, 1000.0)],
+                strategy=StrategyConfig("test", {"SPY": 1.0}),
+            ),
+            returns=returns, prices=prices, fx_rates=fx,
+        )
+        assert hasattr(result, "person")
+        assert result.person.health_insurance_krw >= 0

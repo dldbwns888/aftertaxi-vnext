@@ -128,7 +128,7 @@ class AccountSummary:
     # 세금 항목별 버킷
     capital_gains_tax_krw: float = 0.0
     dividend_tax_krw: float = 0.0
-    health_insurance_krw: float = 0.0
+    health_insurance_krw: float = 0.0  # allocated convenience; authority=EngineResult.person
 
     @property
     def dividend_net_usd(self) -> float:
@@ -159,6 +159,20 @@ class TaxSummary:
 
 
 @dataclass(frozen=True)
+class PersonSummary:
+    """person-scope 부채. 특정 계좌에 귀속되지 않는 것.
+
+    권위 있는 person-scope 값은 여기.
+    AccountSummary의 health_insurance_krw는 allocated convenience
+    (현재 MVP: 첫 TAXABLE에 전액 귀속).
+    """
+    health_insurance_krw: float = 0.0
+    # 향후 확장:
+    # comprehensive_tax_krw: float = 0.0
+    # total_dividend_income_krw: float = 0.0
+
+
+@dataclass(frozen=True)
 class EngineResult:
     """엔진 백테스트 최종 결과 — typed, 불변.
 
@@ -179,6 +193,9 @@ class EngineResult:
 
     # ── 계좌별 ──
     accounts: List[AccountSummary]
+
+    # ── person-scope ──
+    person: PersonSummary
 
     # ── 시계열 ──
     monthly_values: np.ndarray  # 월별 합산 PV (USD)

@@ -27,7 +27,7 @@ import pandas as pd
 
 from aftertaxi.core.contracts import (
     AccountConfig, AccountSummary, AccountType, BacktestConfig,
-    EngineResult, RebalanceMode, TaxSummary,
+    EngineResult, PersonSummary, RebalanceMode, TaxSummary,
 )
 from aftertaxi.core.ledger import AccountLedger
 from aftertaxi.core.settlement import settle_year_end, settle_final
@@ -225,6 +225,11 @@ def _aggregate(ledgers: Dict[str, AccountLedger], reporting_fx: float) -> Engine
     gross_krw = total_pv * reporting_fx
     net_krw = gross_krw - total_unpaid
 
+    # person-scope: 계좌 합산 (authority)
+    person = PersonSummary(
+        health_insurance_krw=sum(a.health_insurance_krw for a in account_summaries),
+    )
+
     return EngineResult(
         gross_pv_usd=total_pv,
         invested_usd=total_inv,
@@ -240,6 +245,7 @@ def _aggregate(ledgers: Dict[str, AccountLedger], reporting_fx: float) -> Engine
             total_paid_krw=total_assessed - total_unpaid,
         ),
         accounts=account_summaries,
+        person=person,
         monthly_values=combined_monthly if combined_monthly is not None else np.array([]),
     )
 
