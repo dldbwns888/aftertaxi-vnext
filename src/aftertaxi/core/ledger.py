@@ -185,68 +185,53 @@ class AccountLedger:
     # ── 세금 정산 ──
 
     def settle_annual_tax(self, current_year: int = 0) -> float:
-        """연말 세금 정산. Returns: tax_krw.
+        """연말 세금 정산. tax_engine에 위임 → 결과 적용.
 
-        이월결손금 규칙:
-          - 각 항목은 (발생연도, 금액) 튜플
-          - 5년 초과 시 만료 (current_year - yr >= 5)
-          - 부분 상쇄 시 원래 연도 유지 (리셋 금지)
-          - net < 0이면 올해 손실을 이월 + 기존 carry 유지
+        ledger는 '왜 이 세금인지' 모른다.
+        tax_engine이 계산하고, ledger는 결과를 적용할 뿐.
         """
-        net = self.annual_realized_gain_krw - self.annual_realized_loss_krw
+        from aftertaxi.core.tax_engine import compute_capital_gains_tax
 
-        # 1. 만료되지 않은 이월결손금만 필터 (연도 보존)
-        valid_carry = []
-        for yr, amt in self.loss_carryforward_krw:
-            if current_year > 0 and yr > 0 and (current_year - yr) >= 5:
-                continue  # 5년 만료
-            if amt > 1e-6:
-                valid_carry.append((yr, amt))
+        result = compute_capital_gains_tax(
+            realized_gain_krw=self.annual_realized_gain_krw,
+            realized_loss_krw=self.annual_realized_loss_krw,
+            carryforward=self.loss_carryforward_krw,
+            current_year=current_year,
+            rate=self.tax_rate,
+            exemption=self.annual_exemption,
+        )
 
-        # 2. net > 0이면 이월결손금으로 상쇄 (오래된 것부터, 연도 보존)
-        new_carry = []
-        if net > 0:
-            for yr, amt in valid_carry:
-                if net <= 0:
-                    new_carry.append((yr, amt))
-                    continue
-                offset = min(net, amt)
-                net -= offset
-                remainder = amt - offset
-                if remainder > 1e-6:
-                    new_carry.append((yr, remainder))  # 원래 연도 유지
-        else:
-            # 3. net <= 0이면 올해 손실을 이월 + 기존 carry 전부 유지 (L2 수정)
-            if abs(net) > 1e-6:
-                new_carry.append((current_year, abs(net)))
-            new_carry.extend(valid_carry)  # 기존 이월결손금 보존
-            net = 0.0
-
-        # 4. 공제 적용
-        taxable = max(0.0, net - self.annual_exemption)
-        tax_krw = taxable * self.tax_rate
-
-        # 5. 상태 갱신
-        self._total_tax_assessed_krw += tax_krw
-        self.unpaid_tax_liability_krw += tax_krw
-        self.loss_carryforward_krw = new_carry
+        # 상태 갱신 (결과 적용만)
+        self._total_tax_assessed_krw += result.tax_krw
+        self.unpaid_tax_liability_krw += result.tax_krw
+        self.loss_carryforward_krw = (
+            result.carryforward_remaining + result.new_loss_carry
+        )
         self.annual_realized_gain_krw = 0.0
         self.annual_realized_loss_krw = 0.0
 
-        return tax_krw
+        return result.tax_krw
 
     # ── ISA 만기 정산 ──
 
     def settle_isa(self) -> float:
-        """ISA 만기: 누적 순이익 중 비과세 한도 초과분에 과세."""
+        """ISA 만기: tax_engine에 위임 → 결과 적용."""
         if self.isa_exempt_limit <= 0:
             return 0.0
-        net = self.cumulative_realized_gain_krw - self.cumulative_realized_loss_krw
-        taxable = max(0.0, net - self.isa_exempt_limit)
-        tax_krw = taxable * self.isa_excess_rate
-        self._total_tax_assessed_krw += tax_krw
-        self.unpaid_tax_liability_krw += tax_krw
-        return tax_krw
+
+        from aftertaxi.core.tax_engine import compute_isa_settlement
+
+        result = compute_isa_settlement(
+            cumulative_gain_krw=self.cumulative_realized_gain_krw,
+            cumulative_loss_krw=self.cumulative_realized_loss_krw,
+            exempt_limit=self.isa_exempt_limit,
+            excess_rate=self.isa_excess_rate,
+        )
+
+        # 상태 갱신 (결과 적용만)
+        self._total_tax_assessed_krw += result.tax_krw
+        self.unpaid_tax_liability_krw += result.tax_krw
+        return result.tax_krw
 
     # ── 세금 납부 (KRW → USD 차감) ──
 
