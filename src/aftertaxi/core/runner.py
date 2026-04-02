@@ -31,6 +31,7 @@ from aftertaxi.core.contracts import (
 )
 from aftertaxi.core.ledger import AccountLedger
 from aftertaxi.core.settlement import settle_year_end, settle_final
+from aftertaxi.core.allocation import AllocationPlanner
 
 
 def run_engine(
@@ -69,6 +70,10 @@ def run_engine(
 
     target_weights = config.strategy.weights
     rebal_every = config.strategy.rebalance_every
+
+    # ── Allocation planner ──
+    planner = AllocationPlanner(config.accounts)
+    total_contribution = sum(ac.monthly_contribution for ac in config.accounts)
 
     # ── 월 루프 ──
     current_year = index[start].year if start < len(index) else None
@@ -111,33 +116,27 @@ def run_engine(
                             px_usd=price_map.get(asset, 0),
                         )
 
-        # 3~4. 입금 + 리밸런싱/매수
-        should_rebal = (step % rebal_every == 0)
+        # 3~4. 입금 + 리밸런싱/매수 (AllocationPlanner에 위임)
+        ytd = {ac.account_id: ledgers[ac.account_id].annual_contribution_usd
+               for ac in config.accounts}
+        orders = planner.plan(
+            target_weights=target_weights,
+            total_contribution=total_contribution,
+            month_index=step,
+            rebalance_every=rebal_every,
+            ytd_contributions=ytd,
+        )
 
-        for ac in config.accounts:
-            ledger = ledgers[ac.account_id]
+        for order in orders:
+            ledger = ledgers[order.account_id]
 
-            # annual_cap 체크: 남은 한도만큼만 입금
-            deposit_amount = ac.monthly_contribution
-            if ac.annual_cap is not None:
-                remaining = max(0.0, ac.annual_cap - ledger.annual_contribution_usd)
-                deposit_amount = min(deposit_amount, remaining)
+            if order.deposit > 0:
+                ledger.deposit(order.deposit)
 
-            if deposit_amount > 0:
-                ledger.deposit(deposit_amount)
-
-            # allowed_assets 필터: 허용 자산만 매수
-            effective_weights = target_weights
-            if ac.allowed_assets is not None:
-                effective_weights = {
-                    a: w for a, w in target_weights.items()
-                    if a in ac.allowed_assets
-                }
-
-            if ac.rebalance_mode == RebalanceMode.FULL and should_rebal:
-                _execute_full_rebalance(ledger, effective_weights, price_map, fx_rate)
+            if order.rebalance_mode == RebalanceMode.FULL and order.should_rebalance:
+                _execute_full_rebalance(ledger, order.target_weights, price_map, fx_rate)
             else:
-                _execute_contribution_only(ledger, effective_weights, price_map, fx_rate)
+                _execute_contribution_only(ledger, order.target_weights, price_map, fx_rate)
 
         # 5. 월말 기록
         for ledger in ledgers.values():
