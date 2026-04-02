@@ -71,7 +71,7 @@ def run_engine(
     target_weights = config.strategy.weights
     rebal_every = config.strategy.rebalance_every
 
-    # ── Allocation planner ──
+    # ── Allocation planner (priority 순 정렬 + cap/allowed 반영) ──
     planner = AllocationPlanner(config.accounts)
     total_contribution = sum(ac.monthly_contribution for ac in config.accounts)
 
