@@ -90,6 +90,9 @@ def run_engine(
         if current_year is not None and dt.year != current_year:
             settle_year_end(ledgers, current_year, fx_rate,
                            enable_health_insurance=config.enable_health_insurance)
+            # 연간 납입 리셋
+            for ledger in ledgers.values():
+                ledger.annual_contribution_usd = 0.0
             current_year = dt.year
 
         # 2.5 배당 처리 (schedule이 있을 때만)
@@ -113,12 +116,28 @@ def run_engine(
 
         for ac in config.accounts:
             ledger = ledgers[ac.account_id]
-            ledger.deposit(ac.monthly_contribution)
+
+            # annual_cap 체크: 남은 한도만큼만 입금
+            deposit_amount = ac.monthly_contribution
+            if ac.annual_cap is not None:
+                remaining = max(0.0, ac.annual_cap - ledger.annual_contribution_usd)
+                deposit_amount = min(deposit_amount, remaining)
+
+            if deposit_amount > 0:
+                ledger.deposit(deposit_amount)
+
+            # allowed_assets 필터: 허용 자산만 매수
+            effective_weights = target_weights
+            if ac.allowed_assets is not None:
+                effective_weights = {
+                    a: w for a, w in target_weights.items()
+                    if a in ac.allowed_assets
+                }
 
             if ac.rebalance_mode == RebalanceMode.FULL and should_rebal:
-                _execute_full_rebalance(ledger, target_weights, price_map, fx_rate)
+                _execute_full_rebalance(ledger, effective_weights, price_map, fx_rate)
             else:
-                _execute_contribution_only(ledger, target_weights, price_map, fx_rate)
+                _execute_contribution_only(ledger, effective_weights, price_map, fx_rate)
 
         # 5. 월말 기록
         for ledger in ledgers.values():

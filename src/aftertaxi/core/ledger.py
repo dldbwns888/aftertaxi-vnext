@@ -103,6 +103,7 @@ class AccountLedger:
 
         # ── 누적 ──
         self.total_invested_usd: float = 0.0
+        self.annual_contribution_usd: float = 0.0  # 연간 납입 (cap 체크용, 연말 리셋)
 
         # ── 기록 ──
         self.monthly_values: List[float] = []
@@ -171,10 +172,15 @@ class AccountLedger:
 
     # ── 입금 ──
 
-    def deposit(self, amount_usd: float) -> None:
+    def deposit(self, amount_usd: float) -> float:
+        """입금. Returns: 실제 입금액 (cap 적용 후)."""
+        if amount_usd <= 0:
+            return 0.0
         self.cash_usd += amount_usd
         self.total_invested_usd += amount_usd
+        self.annual_contribution_usd += amount_usd
         self._log("deposit", amount_usd=amount_usd)
+        return amount_usd
 
     # ── 매수 (FX) ──
 

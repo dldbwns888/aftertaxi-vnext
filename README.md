@@ -9,6 +9,7 @@
 
 ### 할 수 있는 것
 - FX-only 코어: C/O + FULL rebalance, TAXABLE + ISA, AVGCOST
+- 계좌 제약: annual_cap (연간 납입 한도), allowed_assets (허용 자산 필터)
 - 세금 버킷 분리: 양도세 / 배당세 / 건보료(MVP) 항목별 추적
 - 거래비용, 배당(원천징수+재투자), EventJournal
 - ResultAttribution: 세후 결과 원인 분해
@@ -26,9 +27,13 @@
 - 종합과세 누진구간 완전체 (현재 고정 세율 MVP)
 - 건보료 parity (현재 배당소득 기반 MVP, 이자소득 미포함)
 
-### 미구현 계약 필드 (설정 시 예외 발생)
-- `AccountConfig.annual_cap` → `NotImplementedError`
-- `AccountConfig.allowed_assets` → `NotImplementedError`
+### 계약 필드 구현 상태
+
+구현 완료:
+- `AccountConfig.annual_cap` — 연간 납입 한도 (cap 초과분 skip)
+- `AccountConfig.allowed_assets` — 허용 자산만 매수
+
+미구현 (설정 시 예외):
 - `RebalanceMode.BUDGET` → `NotImplementedError`
 - `lot_method != "AVGCOST"` → `NotImplementedError`
 
@@ -112,4 +117,4 @@ PYTHONPATH=/path/to/aftertaxi:src python -m pytest tests/ -q
 python -m pytest tests/test_contracts.py tests/test_unsupported_config.py -v
 ```
 
-240 tests, ~35초.
+242 tests, ~35초.

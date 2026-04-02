@@ -54,9 +54,9 @@ class AccountConfig:
     monthly_contribution: float
     rebalance_mode: RebalanceMode = RebalanceMode.CONTRIBUTION_ONLY
     tax_config: TaxConfig = field(default_factory=TaxConfig)
-    annual_cap: Optional[float] = None  # ISA 연간 한도. ⚠ 미구현 → facade에서 예외
+    annual_cap: Optional[float] = None  # 연간 납입 한도 (USD). None이면 무제한
     lot_method: Literal["AVGCOST"] = "AVGCOST"  # ⚠ FIFO/HIFO 미구현 → facade에서 예외
-    allowed_assets: Optional[set] = None  # ⚠ 미구현 → facade에서 예외
+    allowed_assets: Optional[set] = None  # 허용 자산 집합. None이면 전체 허용
     transaction_cost_bps: float = 0.0    # 거래비용 (basis points, 매수/매도 각각 적용)
 
 

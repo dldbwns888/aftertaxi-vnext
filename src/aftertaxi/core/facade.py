@@ -56,16 +56,6 @@ def _validate_config(config: BacktestConfig) -> None:
     from aftertaxi.core.contracts import RebalanceMode
 
     for acct in config.accounts:
-        if acct.annual_cap is not None:
-            raise NotImplementedError(
-                f"계좌 '{acct.account_id}': annual_cap은 아직 미구현. "
-                "ISA 연간 납입 한도 체크는 향후 추가 예정."
-            )
-        if acct.allowed_assets is not None:
-            raise NotImplementedError(
-                f"계좌 '{acct.account_id}': allowed_assets는 아직 미구현. "
-                "계좌별 허용 자산 필터링은 향후 추가 예정."
-            )
         if acct.rebalance_mode == RebalanceMode.BUDGET:
             raise NotImplementedError(
                 f"계좌 '{acct.account_id}': BUDGET 리밸런스 모드는 아직 미구현. "
