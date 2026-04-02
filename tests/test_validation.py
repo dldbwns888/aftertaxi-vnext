@@ -200,3 +200,110 @@ class TestUnifiedValidate:
         text = report.summary_text()
         assert "Q60S40" in text
         assert "pass" in text.lower() or "PASS" in text
+
+
+# ══════════════════════════════════════════════
+# Stability: Rolling Sharpe
+# ══════════════════════════════════════════════
+
+from aftertaxi.validation.stability import (
+    check_rolling_sharpe, check_walk_forward, check_is_oos_decay,
+    run_stability_checks,
+)
+
+
+class TestRollingSharpe:
+
+    def test_stable_positive(self):
+        er = _make_excess_returns(180, mean=0.008, std=0.03)
+        r = check_rolling_sharpe(er)
+        assert r.name == "rolling_sharpe"
+        assert r.grade in (Grade.PASS, Grade.WARN)
+
+    def test_short_data(self):
+        er = _make_excess_returns(30)
+        r = check_rolling_sharpe(er, window=60)
+        assert r.grade == Grade.WARN
+
+
+# ══════════════════════════════════════════════
+# Stability: Walk-Forward
+# ══════════════════════════════════════════════
+
+class TestWalkForward:
+
+    def test_consistent_strategy(self):
+        er = _make_excess_returns(180, mean=0.008, std=0.03)
+        r = check_walk_forward(er)
+        assert r.name == "walk_forward"
+        # CV가 합리적이어야
+        assert r.value < 5.0
+
+    def test_short_data(self):
+        er = _make_excess_returns(30)
+        r = check_walk_forward(er, n_splits=5)
+        assert r.grade == Grade.WARN
+
+
+# ══════════════════════════════════════════════
+# Stability: IS-OOS Decay
+# ══════════════════════════════════════════════
+
+class TestISOOSDecay:
+
+    def test_mild_decay(self):
+        er = _make_excess_returns(120, mean=0.008, std=0.03)
+        r = check_is_oos_decay(er, split_index=80)
+        assert r.name == "is_oos_decay"
+
+    def test_insufficient_split(self):
+        er = _make_excess_returns(30)
+        r = check_is_oos_decay(er, split_index=5)
+        assert r.grade == Grade.WARN
+
+
+# ══════════════════════════════════════════════
+# Suite Runner
+# ══════════════════════════════════════════════
+
+from aftertaxi.validation.run import run_validation_suite
+
+
+class TestSuiteRunner:
+
+    def test_full_suite(self):
+        result = _make_engine_result()
+        er = _make_excess_returns(120, mean=0.008, std=0.03)
+        bench = _make_excess_returns(120, mean=0.0, std=0.04, seed=99)
+
+        report = run_validation_suite(
+            result=result,
+            excess_returns=er,
+            bench_returns=bench,
+            strategy_name="full_test",
+            is_oos_split=80,
+        )
+
+        assert isinstance(report, ValidationReport)
+        assert report.strategy_name == "full_test"
+        # basic 5 + statistical 3(dsr,psr,cusum) + heavy 2(bootstrap,perm)
+        # + stability 3(rolling,wf,isoos)
+        assert len(report.checks) >= 12
+
+    def test_suite_parallel(self):
+        er = _make_excess_returns(120, mean=0.008, std=0.03)
+        bench = _make_excess_returns(120, mean=0.0, std=0.04, seed=99)
+
+        r_seq = run_validation_suite(excess_returns=er, bench_returns=bench, n_jobs=1)
+        r_par = run_validation_suite(excess_returns=er, bench_returns=bench, n_jobs=2)
+
+        # 같은 결과
+        assert r_seq.n_pass == r_par.n_pass
+        assert r_seq.n_fail == r_par.n_fail
+
+    def test_suite_summary(self):
+        er = _make_excess_returns(120)
+        report = run_validation_suite(excess_returns=er, strategy_name="Q60S40")
+        text = report.summary_text()
+        assert "Q60S40" in text
+        assert "pass" in text.lower() or "warn" in text.lower() or "fail" in text.lower()

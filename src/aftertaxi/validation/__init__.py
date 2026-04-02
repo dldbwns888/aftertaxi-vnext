@@ -6,13 +6,20 @@ validation/ — 검증 레이어
 코어를 안 건드리고 밖에서 붙는다.
 
 사용법:
-  from aftertaxi.validation import validate
+  from aftertaxi.validation import validate, run_validation_suite
+  
+  # 간단 검증
   report = validate(result, excess_returns, strategy_name="Q60S40")
+  
+  # 전체 스위트 (병렬)
+  report = run_validation_suite(result, er, n_jobs=2)
   print(report.summary_text())
 """
 from aftertaxi.validation.reports import ValidationReport, CheckResult, Grade
 from aftertaxi.validation.basic import run_basic_checks
 from aftertaxi.validation.statistical import run_statistical_checks
+from aftertaxi.validation.stability import run_stability_checks
+from aftertaxi.validation.run import run_validation_suite
 
 
 def validate(
@@ -23,7 +30,7 @@ def validate(
     benchmark_sharpe: float = 0.0,
     bench_returns=None,
 ) -> ValidationReport:
-    """통합 검증 실행. basic + statistical."""
+    """간편 검증. basic + statistical."""
     report = ValidationReport(strategy_name=strategy_name)
 
     if result is not None:
