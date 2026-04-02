@@ -155,3 +155,25 @@ class TestRunLaneD:
         report = run_lane_d(source_returns, backtest_config, small_config)
         assert report.p5_mult_after_tax <= report.median_mult_after_tax
         assert report.median_mult_after_tax <= report.p95_mult_after_tax
+
+
+# ══════════════════════════════════════════════
+# 병렬화 테스트
+# ══════════════════════════════════════════════
+
+class TestParallel:
+
+    def test_sequential_equals_parallel(self, source_returns, small_config, backtest_config):
+        """n_jobs=1과 n_jobs=2 결과 동일."""
+        r1 = run_lane_d(source_returns, backtest_config, small_config, n_jobs=1)
+        r2 = run_lane_d(source_returns, backtest_config, small_config, n_jobs=2)
+        np.testing.assert_allclose(
+            r1.all_mult_after_tax, r2.all_mult_after_tax, rtol=1e-10,
+        )
+
+    def test_parallel_same_stats(self, source_returns, small_config, backtest_config):
+        """병렬 실행도 같은 통계."""
+        r1 = run_lane_d(source_returns, backtest_config, small_config, n_jobs=1)
+        r2 = run_lane_d(source_returns, backtest_config, small_config, n_jobs=2)
+        assert r1.survival_rate == r2.survival_rate
+        assert abs(r1.median_mult_after_tax - r2.median_mult_after_tax) < 1e-10

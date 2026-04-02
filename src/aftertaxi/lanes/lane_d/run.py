@@ -93,11 +93,32 @@ class SyntheticSurvivalReport:
         return "\n".join(lines)
 
 
+def _run_single_path(
+    path_returns: pd.DataFrame,
+    backtest_config: BacktestConfig,
+    fx_rate: float,
+) -> tuple:
+    """단일 합성 경로에서 엔진 실행. joblib worker용."""
+    try:
+        path_prices = returns_to_prices(path_returns)
+        fx = pd.Series(fx_rate, index=path_returns.index)
+        result = run_backtest(
+            backtest_config,
+            returns=path_returns,
+            prices=path_prices,
+            fx_rates=fx,
+        )
+        return (result.mult_after_tax, result.mdd)
+    except Exception:
+        return (0.0, -1.0)
+
+
 def run_lane_d(
     source_returns: pd.DataFrame,
     backtest_config: BacktestConfig,
     synthetic_config: Optional[SyntheticMarketConfig] = None,
     actual_result: Optional[EngineResult] = None,
+    n_jobs: int = 1,
 ) -> SyntheticSurvivalReport:
     """Lane D 합성 장기 생존 시뮬레이션 실행.
 
@@ -107,37 +128,28 @@ def run_lane_d(
     backtest_config : 전략+계좌 설정 (compile 결과)
     synthetic_config : 합성 경로 설정
     actual_result : 실제 전략 결과 (percentile 계산용, optional)
+    n_jobs : 병렬 워커 수 (1이면 순차, -1이면 전체 CPU)
     """
     if synthetic_config is None:
         synthetic_config = SyntheticMarketConfig()
 
-    # 1. 합성 경로 생성
+    # 1. 합성 경로 생성 (순차 — seed 재현성 보장)
     paths = generate_synthetic_paths(source_returns, synthetic_config)
 
-    # 2. 각 경로에서 엔진 실행
-    mults = []
-    mdds = []
+    # 2. 각 경로에서 엔진 실행 (병렬 가능)
+    fx_rate = synthetic_config.base_fx_rate
 
-    for path_returns in paths:
-        try:
-            path_prices = returns_to_prices(path_returns)
-            fx = pd.Series(synthetic_config.base_fx_rate, index=path_returns.index)
+    if n_jobs != 1:
+        from joblib import Parallel, delayed
+        results = Parallel(n_jobs=n_jobs)(
+            delayed(_run_single_path)(p, backtest_config, fx_rate)
+            for p in paths
+        )
+    else:
+        results = [_run_single_path(p, backtest_config, fx_rate) for p in paths]
 
-            result = run_backtest(
-                backtest_config,
-                returns=path_returns,
-                prices=path_prices,
-                fx_rates=fx,
-            )
-            mults.append(result.mult_after_tax)
-            mdds.append(result.mdd)
-        except Exception:
-            # 실패한 경로: 전멸
-            mults.append(0.0)
-            mdds.append(-1.0)
-
-    mults = np.array(mults)
-    mdds = np.array(mdds)
+    mults = np.array([r[0] for r in results])
+    mdds = np.array([r[1] for r in results])
 
     # 3. 통계 계산
     survival_rate = float(np.mean(mults > 1.0))

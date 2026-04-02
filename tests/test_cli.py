@@ -57,3 +57,10 @@ class TestCLI:
         r1 = main([path, "--months", "24", "--seed", "99"])
         r2 = main([path, "--months", "24", "--seed", "99"])
         assert r1.gross_pv_usd == r2.gross_pv_usd
+
+    def test_lane_d(self, capsys):
+        path = self._write_config({"strategy": {"type": "spy_bnh"}})
+        result = main([path, "--months", "24", "--lane-d", "--lane-d-paths", "3", "--lane-d-years", "5"])
+        out = capsys.readouterr().out
+        assert "Lane D" in out
+        assert "생존률" in out

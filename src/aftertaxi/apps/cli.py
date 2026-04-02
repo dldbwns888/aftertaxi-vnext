@@ -107,6 +107,12 @@ def main(argv=None):
     parser.add_argument("--json", action="store_true", help="JSON 출력 (workbench 형식)")
     parser.add_argument("--seed", type=int, default=42, help="합성 데이터 시드")
 
+    # Lane D
+    parser.add_argument("--lane-d", action="store_true", help="Lane D 합성 100년 생존 시뮬레이션")
+    parser.add_argument("--lane-d-paths", type=int, default=50, help="Lane D 경로 수")
+    parser.add_argument("--lane-d-years", type=int, default=100, help="Lane D 경로 길이 (년)")
+    parser.add_argument("--lane-d-jobs", type=int, default=1, help="Lane D 병렬 워커 수")
+
     args = parser.parse_args(argv)
 
     # 1. JSON 읽기
@@ -145,6 +151,27 @@ def main(argv=None):
         from aftertaxi.core.attribution import build_attribution
         attribution = build_attribution(result)
         _print_result(result, attribution)
+
+    # 6. Lane D (optional)
+    if args.lane_d:
+        from aftertaxi.lanes.lane_d.synthetic import SyntheticMarketConfig
+        from aftertaxi.lanes.lane_d.run import run_lane_d
+
+        synth_config = SyntheticMarketConfig(
+            n_paths=args.lane_d_paths,
+            path_length_months=args.lane_d_years * 12,
+            seed=args.seed,
+            base_fx_rate=args.fx,
+        )
+        lane_d_report = run_lane_d(
+            source_returns=returns,
+            backtest_config=config,
+            synthetic_config=synth_config,
+            actual_result=result,
+            n_jobs=args.lane_d_jobs,
+        )
+        print(lane_d_report.summary_text())
+        print()
 
     return result
 
