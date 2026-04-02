@@ -19,6 +19,7 @@ PR 2: C/O 단일 경로. 월 루프 + 세금 정산 + 최종 청산.
 """
 from __future__ import annotations
 
+import bisect
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -48,6 +49,7 @@ def run_engine(
     index = prices.index
     n = config.n_months if config.n_months else len(index) - config.start_index
     start = config.start_index
+    fx_lookup = _build_fx_lookup(fx_rates)
 
     # ── 계좌 생성 ──
     ledgers: Dict[str, AccountLedger] = {}
@@ -74,7 +76,7 @@ def run_engine(
 
         dt = index[i]
         price_map = {k: v for k, v in prices.iloc[i].to_dict().items() if v == v}
-        fx_rate = _get_fx_rate(dt, fx_rates)
+        fx_rate = _get_fx_rate(dt, fx_lookup)
 
         # 1. 시가 반영
         for ledger in ledgers.values():
@@ -107,7 +109,7 @@ def run_engine(
     final_i = min(start + n - 1, len(index) - 1)
     final_dt = index[final_i]
     final_prices = {k: v for k, v in prices.iloc[final_i].to_dict().items() if v == v}
-    final_fx = _get_fx_rate(final_dt, fx_rates)
+    final_fx = _get_fx_rate(final_dt, fx_lookup)
     final_year = final_dt.year
 
     for ledger in ledgers.values():
@@ -127,15 +129,23 @@ def run_engine(
     return _aggregate(ledgers, final_fx)
 
 
-def _get_fx_rate(dt: pd.Timestamp, fx_rates: pd.Series) -> float:
-    """날짜에 해당하는 환율. 없으면 가장 가까운 이전 값."""
-    if dt in fx_rates.index:
-        return float(fx_rates.loc[dt])
-    # ffill
-    valid = fx_rates[fx_rates.index <= dt]
-    if len(valid) > 0:
-        return float(valid.iloc[-1])
-    return float(fx_rates.iloc[0])
+def _build_fx_lookup(fx_rates: pd.Series) -> tuple:
+    """환율 Series → (dict, sorted_dates) 사전 구축. O(n) 1회."""
+    fx_dict = {ts: float(v) for ts, v in fx_rates.items()}
+    sorted_dates = sorted(fx_dict.keys())
+    return fx_dict, sorted_dates
+
+
+def _get_fx_rate(dt: pd.Timestamp, fx_lookup: tuple) -> float:
+    """O(1) dict lookup + O(log n) bisect fallback."""
+    fx_dict, sorted_dates = fx_lookup
+    if dt in fx_dict:
+        return fx_dict[dt]
+    # bisect: 가장 가까운 이전 날짜
+    idx = bisect.bisect_right(sorted_dates, dt) - 1
+    if idx >= 0:
+        return fx_dict[sorted_dates[idx]]
+    return fx_dict[sorted_dates[0]]
 
 
 def _aggregate(ledgers: Dict[str, AccountLedger], reporting_fx: float) -> EngineResult:

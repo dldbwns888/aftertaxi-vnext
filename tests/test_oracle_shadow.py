@@ -693,3 +693,87 @@ class TestOracle7_CarryforwardOffset:
     def test_60_months(self):
         new, _ = self._run_both()
         assert new.n_months == 60
+
+
+# ══════════════════════════════════════════════
+# Oracle 8: C/O, weights 합 < 1.0 — 정규화 검증
+# ══════════════════════════════════════════════
+
+class TestOracle8_SubunitWeights:
+    """weights 합이 1.0 미만일 때 C/O가 전액 투자하는지 검증.
+    양 엔진 모두 C/O는 tw_sum으로 정규화하므로 shadow match 가능.
+    NOTE: FULL은 legacy가 raw weights를 쓰므로 shadow 불일치 (의도적 개선).
+    """
+
+    N = 24
+    ASSETS = ["SPY", "QQQ"]
+    MONTHLY = 1000.0
+    WEIGHTS = {"SPY": 0.5, "QQQ": 0.3}  # 합 = 0.8
+
+    def _make_prices(self):
+        idx = _monthly_index(self.N)
+        spy = [100.0]
+        qqq = [100.0]
+        for _ in range(1, self.N):
+            spy.append(spy[-1] * 1.01)
+            qqq.append(qqq[-1] * 1.015)
+        return pd.DataFrame({"SPY": spy, "QQQ": qqq}, index=idx)
+
+    def _run_both(self):
+        prices = self._make_prices()
+        returns = _returns_from_prices(prices)
+        fx_series = _constant_fx(self.N)
+        fx_store = FxRateStore.from_series(fx_series)
+
+        # 기존 엔진 — C/O, 커스텀 weights
+        idx = _monthly_index(self.N)
+        weights_df = pd.DataFrame(
+            {"SPY": [0.5]*self.N, "QQQ": [0.3]*self.N}, index=idx,
+        )
+        mask = pd.Series([True]*self.N, index=idx)
+        strategy = StrategySpec(
+            name="oracle_subunit", weights=weights_df,
+            rebalance_mask=mask, metadata={},
+        )
+
+        spec = AccountSpec(
+            account_id="taxable",
+            account_type=LegacyAccountType.TAXABLE,
+            tax_rule=TAXABLE_TAX,
+            contribution_rule=ContributionRule(monthly_amount=self.MONTHLY, priority=0),
+            rebalance_rule=RebalanceRule(mode=LegacyRebalMode.CONTRIBUTION_ONLY, lot_method="AVGCOST"),
+        )
+        runner = PortfolioRunnerV2(
+            returns=returns, accounts=[spec],
+            prices=prices, fx_store=fx_store,
+        )
+        old_result = runner.run(strategy)
+
+        # 새 엔진 — C/O
+        new_result = run_backtest(
+            BacktestConfig(
+                accounts=[AccountConfig(
+                    account_id="taxable",
+                    account_type=AccountType.TAXABLE,
+                    monthly_contribution=self.MONTHLY,
+                    rebalance_mode=RebalanceMode.CONTRIBUTION_ONLY,
+                    lot_method="AVGCOST",
+                )],
+                strategy=StrategyConfig(
+                    name="oracle_subunit", weights=self.WEIGHTS,
+                ),
+            ),
+            returns=returns, prices=prices, fx_store=fx_store,
+        )
+        return new_result, old_result
+
+    def test_shadow_match(self):
+        """C/O + weights<1.0: 양 엔진 모두 tw_sum 정규화 → 일치."""
+        new, old = self._run_both()
+        assert_shadow_match(new, old, fx_enabled=True)
+
+    def test_no_idle_cash(self):
+        """C/O는 weights 합이 뭐든 전액 투자."""
+        new, _ = self._run_both()
+        # PV ≈ invested (가격 상승분은 있으니 >= invested)
+        assert new.gross_pv_usd >= new.invested_usd * 0.95
