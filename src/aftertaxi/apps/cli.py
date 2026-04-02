@@ -191,5 +191,10 @@ def main(argv=None):
     return result
 
 
+def entry_point():
+    """패키지 엔트리포인트. exit code 0 반환."""
+    main()
+
+
 if __name__ == "__main__":
     main()
