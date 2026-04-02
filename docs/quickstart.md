@@ -5,7 +5,17 @@
 ```bash
 git clone https://github.com/dldbwns888/aftertaxi-vnext.git
 cd aftertaxi-vnext
-pip install pandas numpy scipy openpyxl yfinance joblib
+
+# 기본 (코어만)
+pip install -e .
+
+# 전체 (데이터+GUI+병렬+개발도구)
+pip install -e ".[all]"
+
+# 필요한 것만
+pip install -e ".[data]"      # yfinance
+pip install -e ".[gui]"       # streamlit
+pip install -e ".[parallel]"  # joblib
 ```
 
 ## 2. 가장 빠른 실행 (CLI)
@@ -17,7 +27,7 @@ JSON 파일 하나로 백테스트:
 echo '{"strategy":{"type":"q60s40"}}' > config.json
 
 # 실행 (합성 데이터, 20년)
-PYTHONPATH=src python -m aftertaxi.apps.cli config.json --months 240
+aftertaxi config.json --months 240
 ```
 
 출력:
@@ -37,7 +47,7 @@ PYTHONPATH=src python -m aftertaxi.apps.cli config.json --months 240
 # 실제 SPY 데이터 (yfinance)
 echo '{"strategy":{"type":"spy_bnh"},"accounts":[{"type":"TAXABLE","monthly_contribution":1000}]}' > spy.json
 
-PYTHONPATH=src python -m aftertaxi.apps.cli spy.json --months 120
+aftertaxi spy.json --months 120
 ```
 
 ## 4. 전략 비교 (CLI + Lane D)
@@ -46,14 +56,14 @@ PYTHONPATH=src python -m aftertaxi.apps.cli spy.json --months 120
 # Q60S40 + Lane D 합성 생존 시뮬레이션
 echo '{"strategy":{"type":"q60s40"}}' > q60.json
 
-PYTHONPATH=src python -m aftertaxi.apps.cli q60.json --months 240 --lane-d --lane-d-paths 20 --lane-d-years 50
+aftertaxi q60.json --months 240 --lane-d --lane-d-paths 20 --lane-d-years 50
 ```
 
 ## 5. GUI (Streamlit)
 
 ```bash
 pip install streamlit
-PYTHONPATH=src streamlit run src/aftertaxi/apps/gui/streamlit_app.py
+streamlit run src/aftertaxi/apps/gui/streamlit_app.py
 ```
 
 브라우저에서:
