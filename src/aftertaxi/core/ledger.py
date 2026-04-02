@@ -63,6 +63,8 @@ class AccountLedger:
         annual_exemption: float = 2_500_000.0,
         isa_exempt_limit: float = 0.0,
         isa_excess_rate: float = 0.099,
+        transaction_cost_bps: float = 0.0,
+        journal=None,
     ):
         self.account_id = account_id
         self.account_type = account_type
@@ -70,6 +72,8 @@ class AccountLedger:
         self.annual_exemption = annual_exemption
         self.isa_exempt_limit = isa_exempt_limit
         self.isa_excess_rate = isa_excess_rate
+        self.transaction_cost_bps = transaction_cost_bps
+        self._journal = journal  # Optional[EventJournal], None이면 기록 안 함
 
         # ── 잔고 ──
         self.cash_usd: float = 0.0
@@ -83,6 +87,9 @@ class AccountLedger:
         self._total_tax_assessed_krw: float = 0.0
         self.unpaid_tax_liability_krw: float = 0.0
         self.loss_carryforward_krw: List[Tuple[int, float]] = []
+
+        # ── 거래비용 (attribution용) ──
+        self.total_transaction_cost_usd: float = 0.0
 
         # ── 누적 ──
         self.total_invested_usd: float = 0.0
@@ -106,39 +113,61 @@ class AccountLedger:
             if asset in price_map and pos.qty > 1e-12:
                 pos.market_value_usd = pos.qty * price_map[asset]
 
+    def _log(self, event_type: str, **kwargs) -> None:
+        """journal이 있으면 기록, 없으면 무시."""
+        if self._journal is not None:
+            self._journal.record(event_type, self.account_id, **kwargs)
+
     # ── 입금 ──
 
     def deposit(self, amount_usd: float) -> None:
         self.cash_usd += amount_usd
         self.total_invested_usd += amount_usd
+        self._log("deposit", amount_usd=amount_usd)
 
     # ── 매수 (FX) ──
 
     def buy(self, asset: str, qty: float, px_usd: float, fx_rate: float) -> None:
-        """매수. cash 차감 + position 갱신 + KRW 원가 기록."""
-        cost_usd = qty * px_usd
-        if cost_usd > self.cash_usd + 1e-8:
-            # 현금 부족 — 가능한 만큼만
-            qty = self.cash_usd / px_usd
-            cost_usd = qty * px_usd
+        """매수. cash 차감 + position 갱신 + KRW 원가 기록.
 
-        self.cash_usd -= cost_usd
-        cost_krw = cost_usd * fx_rate
+        거래비용은 취득가에 포함 (한국 세법: 필요경비).
+        """
+        cost_usd = qty * px_usd
+        fee_usd = cost_usd * (self.transaction_cost_bps / 10_000)
+        total_cost_usd = cost_usd + fee_usd
+
+        if total_cost_usd > self.cash_usd + 1e-8:
+            # 현금 부족 — 가능한 만큼만 (fee 포함)
+            available = self.cash_usd
+            cost_usd = available / (1 + self.transaction_cost_bps / 10_000)
+            fee_usd = available - cost_usd
+            total_cost_usd = available
+            qty = cost_usd / px_usd
+
+        self.cash_usd -= total_cost_usd
+        self.total_transaction_cost_usd += fee_usd
+
+        # 원가에 fee 포함 (세법상 취득가)
+        cost_with_fee_krw = total_cost_usd * fx_rate
 
         if asset not in self.positions:
             self.positions[asset] = Position()
 
         pos = self.positions[asset]
         pos.qty += qty
-        pos.cost_basis_usd += cost_usd
-        pos.cost_basis_krw += cost_krw
+        pos.cost_basis_usd += total_cost_usd
+        pos.cost_basis_krw += cost_with_fee_krw
         pos.market_value_usd = pos.qty * px_usd
+
+        self._log("buy", amount_usd=cost_usd, asset=asset, fx_rate=fx_rate,
+                  metadata={"qty": qty, "px": px_usd, "fee_usd": fee_usd})
 
     # ── 매도 (FX) ──
 
     def sell(self, asset: str, qty: float, px_usd: float, fx_rate: float) -> float:
         """매도. AVGCOST 기준 실현손익(KRW) 계산.
 
+        거래비용은 양도가에서 차감 (한국 세법: 필요경비).
         Returns: realized_pnl_krw
         """
         pos = self.positions.get(asset)
@@ -146,18 +175,22 @@ class AccountLedger:
             return 0.0
 
         qty = min(qty, pos.qty)
-        proceeds_usd = qty * px_usd
-        proceeds_krw = proceeds_usd * fx_rate
+        gross_proceeds_usd = qty * px_usd
+        fee_usd = gross_proceeds_usd * (self.transaction_cost_bps / 10_000)
+        net_proceeds_usd = gross_proceeds_usd - fee_usd
+        net_proceeds_krw = net_proceeds_usd * fx_rate
 
         # AVGCOST: 비례 원가
         fraction = qty / pos.qty
         cost_krw = pos.cost_basis_krw * fraction
         cost_usd = pos.cost_basis_usd * fraction
 
-        realized_krw = proceeds_krw - cost_krw
+        # 실현손익 (fee 차감 후 수취액 - 원가)
+        realized_krw = net_proceeds_krw - cost_krw
 
         # 상태 갱신
-        self.cash_usd += proceeds_usd
+        self.cash_usd += net_proceeds_usd
+        self.total_transaction_cost_usd += fee_usd
         pos.qty -= qty
         pos.cost_basis_usd -= cost_usd
         pos.cost_basis_krw -= cost_krw
@@ -171,6 +204,10 @@ class AccountLedger:
             self.annual_realized_loss_krw += abs(realized_krw)
             self.cumulative_realized_loss_krw += abs(realized_krw)
 
+        self._log("sell", amount_usd=net_proceeds_usd, asset=asset, fx_rate=fx_rate,
+                  amount_krw=net_proceeds_krw,
+                  metadata={"qty": qty, "px": px_usd, "fee_usd": fee_usd,
+                            "realized_krw": realized_krw})
         return realized_krw
 
     # ── 전량 청산 ──
@@ -210,6 +247,9 @@ class AccountLedger:
         self.annual_realized_gain_krw = 0.0
         self.annual_realized_loss_krw = 0.0
 
+        self._log("tax_assessed", amount_krw=result.tax_krw,
+                  metadata={"taxable_base": result.taxable_base_krw,
+                            "exemption_used": result.exemption_used_krw})
         return result.tax_krw
 
     # ── ISA 만기 정산 ──
@@ -231,6 +271,10 @@ class AccountLedger:
         # 상태 갱신 (결과 적용만)
         self._total_tax_assessed_krw += result.tax_krw
         self.unpaid_tax_liability_krw += result.tax_krw
+        self._log("isa_settlement", amount_krw=result.tax_krw,
+                  metadata={"net_gain": result.net_gain_krw,
+                            "exempt": result.exempt_amount_krw,
+                            "excess": result.excess_amount_krw})
         return result.tax_krw
 
     # ── 세금 납부 (KRW → USD 차감) ──
@@ -241,6 +285,8 @@ class AccountLedger:
             return 0.0
         tax_usd = self.unpaid_tax_liability_krw / fx_rate
         self.cash_usd -= tax_usd
+        self._log("tax_paid", amount_usd=tax_usd, amount_krw=self.unpaid_tax_liability_krw,
+                  fx_rate=fx_rate)
         self.unpaid_tax_liability_krw = 0.0
         return tax_usd
 
@@ -270,6 +316,7 @@ class AccountLedger:
             "invested_usd": self.total_invested_usd,
             "tax_assessed_krw": self._total_tax_assessed_krw,
             "tax_unpaid_krw": self.unpaid_tax_liability_krw,
+            "transaction_cost_usd": self.total_transaction_cost_usd,
             "mdd": mdd,
             "n_months": len(self.monthly_values),
             "monthly_values": mv,

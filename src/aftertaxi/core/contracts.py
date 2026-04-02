@@ -54,6 +54,7 @@ class AccountConfig:
     annual_cap: Optional[float] = None  # ISA 연간 한도. TODO: runner에서 cap 체크 미구현
     lot_method: str = "AVGCOST"         # TODO: FIFO/HIFO 미구현, AVGCOST만 지원
     allowed_assets: Optional[set] = None  # TODO: runner에서 필터링 미구현
+    transaction_cost_bps: float = 0.0    # 거래비용 (basis points, 매수/매도 각각 적용)
 
 
 @dataclass(frozen=True)

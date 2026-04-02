@@ -62,6 +62,7 @@ def run_engine(
             annual_exemption=ac.tax_config.annual_exemption if ac.account_type == AccountType.TAXABLE else 0.0,
             isa_exempt_limit=ac.tax_config.isa_exempt_limit if ac.account_type == AccountType.ISA else 0.0,
             isa_excess_rate=ac.tax_config.capital_gains_rate if ac.account_type == AccountType.ISA else 0.0,
+            transaction_cost_bps=ac.transaction_cost_bps,
         )
 
     target_weights = config.strategy.weights
