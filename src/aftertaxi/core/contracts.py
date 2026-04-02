@@ -32,7 +32,7 @@ class AccountType(str, Enum):
 class RebalanceMode(str, Enum):
     CONTRIBUTION_ONLY = "CONTRIBUTION_ONLY"
     FULL = "FULL"
-    BUDGET = "BUDGET"
+    BUDGET = "BUDGET"  # TODO: 미구현. 세금 예산 이내에서만 FULL
 
 
 @dataclass(frozen=True)
@@ -51,9 +51,9 @@ class AccountConfig:
     monthly_contribution: float
     rebalance_mode: RebalanceMode = RebalanceMode.CONTRIBUTION_ONLY
     tax_config: TaxConfig = field(default_factory=TaxConfig)
-    annual_cap: Optional[float] = None  # ISA 연간 한도
-    lot_method: str = "AVGCOST"
-    allowed_assets: Optional[set] = None
+    annual_cap: Optional[float] = None  # ISA 연간 한도. TODO: runner에서 cap 체크 미구현
+    lot_method: str = "AVGCOST"         # TODO: FIFO/HIFO 미구현, AVGCOST만 지원
+    allowed_assets: Optional[set] = None  # TODO: runner에서 필터링 미구현
 
 
 @dataclass(frozen=True)
