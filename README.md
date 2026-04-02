@@ -92,6 +92,11 @@ src/aftertaxi/
     robustness.py         — 2개 강건성 (CPCV, PBO)
     stress.py             — 랜덤 시장 생존 (vector sign-flip null)
     reports.py, run.py    — typed 리포트 + 통합 실행
+  apps/
+    cli.py                — CLI 실행기 (JSON → 결과, --lane-d 지원)
+    data_provider.py      — 데이터 공급자 (synthetic/yfinance/lane_a)
+    data_cache.py         — SQLite 캐시
+    gui/                  — Streamlit 프로토타입 + draft models
 ```
 
 ## 세금 불변식
@@ -116,9 +121,13 @@ assessed     == paid + unpaid
 PYTHONPATH=/path/to/aftertaxi:src python -m pytest tests/ -q
 ```
 
-313+ tests, ~36초 (API 의존 테스트 제외).
+435+ tests, ~39초 (API 의존 테스트 제외).
 
 ## 문서
 
-- `docs/oracle_shadow_classification.md` — 기존 엔진 테스트 481개 3분류
+- `docs/quickstart.md` — **5분 안에 첫 백테스트**
+- `docs/expansion_guardrails.md` — 확장 금지선/권장선
 - `docs/core_boundary_guide.md` — 기능별 수정 가이드
+- `docs/oracle_shadow_classification.md` — 기존 엔진 테스트 481개 3분류
+- `docs/primary_promotion_checklist.md` — Primary 승격 근거
+- `docs/lane_d_design.md` — Lane D 설계안
