@@ -366,6 +366,8 @@ class AccountLedger:
             "tax_assessed_krw": self._total_tax_assessed_krw,
             "tax_unpaid_krw": self.unpaid_tax_liability_krw,
             "transaction_cost_usd": self.total_transaction_cost_usd,
+            "dividend_gross_usd": self.cumulative_dividend_gross_usd,
+            "dividend_withholding_usd": self.cumulative_dividend_withholding_usd,
             "mdd": mdd,
             "n_months": len(self.monthly_values),
             "monthly_values": mv,

@@ -90,6 +90,14 @@ class AccountSummary:
     tax_unpaid_krw: float
     mdd: float
     n_months: int
+    # attribution 재료 (기본값 0 → 기존 코드 하위호환)
+    transaction_cost_usd: float = 0.0
+    dividend_gross_usd: float = 0.0
+    dividend_withholding_usd: float = 0.0
+
+    @property
+    def dividend_net_usd(self) -> float:
+        return self.dividend_gross_usd - self.dividend_withholding_usd
 
     @property
     def mult_pre_tax(self) -> float:
