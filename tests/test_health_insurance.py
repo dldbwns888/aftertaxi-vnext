@@ -26,49 +26,43 @@ from aftertaxi.core.attribution import build_attribution
 # ══════════════════════════════════════════════
 
 class TestComputeHealthInsurance:
+    """직장가입자 보수 외 소득월액보험료 근사 테스트.
+    법적 근거: 시행령 제41조 — 양도소득은 소득월액 산정 대상 아님.
+    """
 
     def test_below_threshold(self):
         from aftertaxi.core.tax_engine import compute_health_insurance
-        r = compute_health_insurance(
-            capital_gains_krw=15_000_000,
-            dividend_income_krw=0,
-        )
+        r = compute_health_insurance(dividend_income_krw=15_000_000)
         assert not r.is_subject
         assert r.premium_krw == 0.0
 
     def test_above_threshold(self):
         from aftertaxi.core.tax_engine import compute_health_insurance
-        r = compute_health_insurance(
-            capital_gains_krw=30_000_000,  # 3천만 > 2천만 기준
-            dividend_income_krw=0,
-        )
+        r = compute_health_insurance(dividend_income_krw=30_000_000)
         assert r.is_subject
         # (30M - 20M) × 6.99% = 699,000
         assert abs(r.premium_krw - 699_000) < 1.0
 
-    def test_with_dividend(self):
-        from aftertaxi.core.tax_engine import compute_health_insurance
-        r = compute_health_insurance(
-            capital_gains_krw=10_000_000,
-            dividend_income_krw=15_000_000,
-        )
-        # 합산 25M > 20M → 부과
-        assert r.is_subject
-        assert abs(r.premium_krw - 5_000_000 * 0.0699) < 1.0
-
     def test_cap(self):
         from aftertaxi.core.tax_engine import compute_health_insurance
         r = compute_health_insurance(
-            capital_gains_krw=1_000_000_000,  # 10억
-            dividend_income_krw=0,
+            dividend_income_krw=1_000_000_000,
             annual_cap_krw=40_000_000,
         )
-        assert r.premium_krw == 40_000_000  # 상한 적용
+        assert r.premium_krw == 40_000_000
 
     def test_zero_income(self):
         from aftertaxi.core.tax_engine import compute_health_insurance
-        r = compute_health_insurance(0, 0)
+        r = compute_health_insurance(dividend_income_krw=0)
         assert not r.is_subject
+        assert r.premium_krw == 0.0
+
+    def test_capital_gains_only_no_premium(self):
+        """양도차익만 있고 배당 없으면 건보료 0.
+        시행령 제41조: 양도소득은 소득월액 산정 대상 아님."""
+        from aftertaxi.core.tax_engine import compute_health_insurance
+        # 양도차익은 파라미터 자체가 없음 — 배당 0이면 건보료 0
+        r = compute_health_insurance(dividend_income_krw=0)
         assert r.premium_krw == 0.0
 
 
@@ -78,24 +72,26 @@ class TestComputeHealthInsurance:
 
 class TestHealthInsuranceIntegration:
 
-    def _make_growth_data(self, n=60, monthly_return=0.02):
-        """큰 양도차익이 나는 데이터."""
+    def _make_data_with_dividends(self, n=60, div_yield=0.05):
+        """높은 배당수익률 + 큰 납입으로 건보료 기준 초과 유도.
+        $100K/월 × 60개월, 5% 배당 → 연간 배당 ~$15K+ → ~20M+ KRW."""
         idx = pd.date_range("2020-01-31", periods=n, freq="ME")
-        prices_list = [100.0]
-        for _ in range(1, n):
-            prices_list.append(prices_list[-1] * (1 + monthly_return))
-        prices = pd.DataFrame({"SPY": prices_list}, index=idx)
+        prices = pd.DataFrame({"SPY": [400] * n}, index=idx)
         fx = pd.Series(1300.0, index=idx)
         returns = prices.pct_change().fillna(0.0)
-        return returns, prices, fx
+        div_schedule = DividendSchedule({"SPY": div_yield}, frequency=4)
+        return returns, prices, fx, div_schedule
+
+    MONTHLY = 100_000.0  # 큰 납입으로 건보료 기준 초과 보장
 
     def test_health_insurance_off_no_effect(self):
         """enable_health_insurance=False면 건보료 0."""
-        returns, prices, fx = self._make_growth_data()
+        returns, prices, fx, div_sched = self._make_data_with_dividends()
         result = run_backtest(
             BacktestConfig(
-                accounts=[AccountConfig("t", AccountType.TAXABLE, 1000.0)],
+                accounts=[AccountConfig("t", AccountType.TAXABLE, self.MONTHLY)],
                 strategy=StrategyConfig("test", {"SPY": 1.0}),
+                dividend_schedule=div_sched,
                 enable_health_insurance=False,
             ),
             returns=returns, prices=prices, fx_rates=fx,
@@ -103,13 +99,14 @@ class TestHealthInsuranceIntegration:
         assert result.accounts[0].health_insurance_krw == 0.0
 
     def test_health_insurance_on_drag(self):
-        """enable_health_insurance=True면 PV 감소."""
-        returns, prices, fx = self._make_growth_data()
+        """배당소득이 충분하면 건보료 발생 → PV 감소."""
+        returns, prices, fx, div_sched = self._make_data_with_dividends()
 
         r_off = run_backtest(
             BacktestConfig(
-                accounts=[AccountConfig("t", AccountType.TAXABLE, 1000.0)],
+                accounts=[AccountConfig("t", AccountType.TAXABLE, self.MONTHLY)],
                 strategy=StrategyConfig("test", {"SPY": 1.0}),
+                dividend_schedule=div_sched,
                 enable_health_insurance=False,
             ),
             returns=returns, prices=prices, fx_rates=fx,
@@ -117,26 +114,47 @@ class TestHealthInsuranceIntegration:
 
         r_on = run_backtest(
             BacktestConfig(
-                accounts=[AccountConfig("t", AccountType.TAXABLE, 1000.0)],
+                accounts=[AccountConfig("t", AccountType.TAXABLE, self.MONTHLY)],
                 strategy=StrategyConfig("test", {"SPY": 1.0}),
+                dividend_schedule=div_sched,
                 enable_health_insurance=True,
             ),
             returns=returns, prices=prices, fx_rates=fx,
         )
 
-        # 건보료 켜면 PV 감소
         assert r_on.gross_pv_usd < r_off.gross_pv_usd
-        # 건보료 버킷에 값이 있음
         assert r_on.accounts[0].health_insurance_krw > 0
 
-    def test_health_insurance_in_attribution(self):
-        """attribution에서 건보료 drag가 분리되어 보임."""
-        returns, prices, fx = self._make_growth_data()
+    def test_no_dividend_no_health_insurance(self):
+        """배당 없이 양도차익만 있으면 건보료 0 (시행령 제41조)."""
+        idx = pd.date_range("2020-01-31", periods=60, freq="ME")
+        prices_list = [100.0]
+        for _ in range(1, 60):
+            prices_list.append(prices_list[-1] * 1.02)
+        prices = pd.DataFrame({"SPY": prices_list}, index=idx)
+        fx = pd.Series(1300.0, index=idx)
+        returns = prices.pct_change().fillna(0.0)
 
         result = run_backtest(
             BacktestConfig(
-                accounts=[AccountConfig("t", AccountType.TAXABLE, 1000.0)],
+                accounts=[AccountConfig("t", AccountType.TAXABLE, self.MONTHLY)],
                 strategy=StrategyConfig("test", {"SPY": 1.0}),
+                enable_health_insurance=True,  # 켜져 있어도
+                # dividend_schedule 없음 → 배당 0
+            ),
+            returns=returns, prices=prices, fx_rates=fx,
+        )
+
+        # 양도차익은 있지만 배당이 없으므로 건보료 0
+        assert result.accounts[0].health_insurance_krw == 0.0
+
+    def test_health_insurance_in_attribution(self):
+        returns, prices, fx, div_sched = self._make_data_with_dividends()
+        result = run_backtest(
+            BacktestConfig(
+                accounts=[AccountConfig("t", AccountType.TAXABLE, self.MONTHLY)],
+                strategy=StrategyConfig("test", {"SPY": 1.0}),
+                dividend_schedule=div_sched,
                 enable_health_insurance=True,
             ),
             returns=returns, prices=prices, fx_rates=fx,
@@ -144,19 +162,19 @@ class TestHealthInsuranceIntegration:
 
         attr = build_attribution(result)
         assert attr.total_health_insurance_krw > 0
-        assert attr.total_capital_gains_tax_krw > 0
+        assert attr.total_capital_gains_tax_krw >= 0
         # 둘이 분리되어 있음
-        assert attr.total_health_insurance_krw != attr.total_capital_gains_tax_krw
+        assert attr.total_health_insurance_krw != attr.total_tax_assessed_krw
 
     def test_health_insurance_journal_event(self):
-        """건보료 이벤트가 journal에 기록."""
-        returns, prices, fx = self._make_growth_data()
+        returns, prices, fx, div_sched = self._make_data_with_dividends()
         journal = EventJournal()
 
         run_backtest(
             BacktestConfig(
-                accounts=[AccountConfig("t", AccountType.TAXABLE, 1000.0)],
+                accounts=[AccountConfig("t", AccountType.TAXABLE, self.MONTHLY)],
                 strategy=StrategyConfig("test", {"SPY": 1.0}),
+                dividend_schedule=div_sched,
                 enable_health_insurance=True,
             ),
             returns=returns, prices=prices, fx_rates=fx,

@@ -225,67 +225,65 @@ def compute_dividend_tax(
 
 
 # ══════════════════════════════════════════════
-# 건강보험료 (투자소득 추가 부담)
+# 건강보험료 (직장가입자 보수 외 소득월액보험료 근사)
 # ══════════════════════════════════════════════
 
 @dataclass(frozen=True)
 class HealthInsuranceResult:
     """건강보험료 계산 결과.
 
-    MVP 모델: 투자소득(양도차익+배당)이 기준 초과 시 추가 건보료 발생.
-    제도 전체가 아닌 "투자소득으로 인한 추가 drag"만 계산.
+    근사 대상: 직장가입자 보수 외 소득월액보험료 중 투자소득 부분.
+
+    법적 근거:
+      - 국민건강보험법 시행령 제41조: 소득월액 산정 대상 소득
+        → 이자, 배당, 사업, 근로, 연금, 기타소득
+        → 양도소득은 포함 목록에 없음
+      - 기준: 보수 외 소득 연 2천만원 초과 시 소득월액보험료 부과
+
+    MVP 한계:
+      - 직장가입자만 근사 (지역가입자 세대단위 모델 미포함)
+      - 이자/사업/근로/연금/기타소득 미포함 (배당소득만)
+      - 피부양자 탈락 판정 없음
     """
-    total_financial_income_krw: float   # 양도차익 + 배당 합산 (KRW)
-    threshold_krw: float                # 부과 기준
-    is_subject: bool                    # 부과 대상 여부
-    premium_krw: float                  # 추가 건보료
+    dividend_income_krw: float    # 연간 배당소득 (KRW)
+    threshold_krw: float          # 부과 기준 (2천만원)
+    is_subject: bool              # 부과 대상 여부
+    premium_krw: float            # 추가 건보료
 
 
 def compute_health_insurance(
-    capital_gains_krw: float,
     dividend_income_krw: float,
     threshold_krw: float = 20_000_000.0,
     rate: float = 0.0699,
     annual_cap_krw: float = 40_000_000.0,
 ) -> HealthInsuranceResult:
-    """투자소득 기반 추가 건강보험료 계산. 순수 함수.
+    """직장가입자 보수 외 소득월액보험료 근사. 순수 함수.
+
+    양도소득은 시행령 제41조 소득월액 산정 대상에 포함되지 않으므로
+    배당소득만 사용한다.
 
     Parameters
     ----------
-    capital_gains_krw : 연간 양도차익 (KRW, 공제 전)
     dividend_income_krw : 연간 배당소득 (KRW)
-    threshold_krw : 부과 기준 (2천만원)
-    rate : 건보료율 (6.99% = 장기요양 포함 본인 부담)
+    threshold_krw : 부과 기준 (2천만원, 보수 외 소득)
+    rate : 건보료율 (6.99% ≈ 건강보험 3.545% × 2 + 장기요양)
     annual_cap_krw : 연간 상한
-
-    Returns
-    -------
-    HealthInsuranceResult
-
-    Note
-    ----
-    MVP 한계:
-    - 직장/지역 가입자 구분 없음 (단일 모델)
-    - 피부양자 탈락 판정 없음
-    - 다른 소득과의 합산 없음 (투자소득만)
-    - 실제 제도는 더 복잡하며, 이 계산은 근사치임
     """
-    total_income = capital_gains_krw + dividend_income_krw
-    is_subject = total_income > threshold_krw
+    is_subject = dividend_income_krw > threshold_krw
 
     if not is_subject:
         return HealthInsuranceResult(
-            total_financial_income_krw=total_income,
+            dividend_income_krw=dividend_income_krw,
             threshold_krw=threshold_krw,
             is_subject=False,
             premium_krw=0.0,
         )
 
-    taxable = total_income - threshold_krw
+    taxable = dividend_income_krw - threshold_krw
     premium = min(taxable * rate, annual_cap_krw)
 
     return HealthInsuranceResult(
-        total_financial_income_krw=total_income,
+        dividend_income_krw=dividend_income_krw,
         threshold_krw=threshold_krw,
         is_subject=True,
         premium_krw=premium,
