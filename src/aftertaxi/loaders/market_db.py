@@ -393,3 +393,68 @@ class MarketDB:
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (source, ticker, data_type, datetime.now().isoformat(), start_str, end_str, n_rows),
         )
+
+
+# ══════════════════════════════════════════════
+# Engine 편의 함수
+# ══════════════════════════════════════════════
+
+def run_from_db(
+    db: "MarketDB",
+    config: "BacktestConfig",
+    source: str = None,
+    fx_pair: str = "USDKRW",
+) -> "EngineResult":
+    """MarketDB → engine 직접 실행.
+
+    Parameters
+    ----------
+    db : MarketDB 인스턴스
+    config : BacktestConfig (compile 결과)
+    source : 가격 데이터 소스 (None이면 자동 우선순위)
+    fx_pair : FX 페어
+
+    Returns
+    -------
+    EngineResult
+    """
+    from aftertaxi.core.contracts import BacktestConfig, EngineResult
+    from aftertaxi.core.facade import run_backtest
+
+    tickers = list(config.strategy.weights.keys())
+
+    # 가격 추출
+    price_dfs = {}
+    for ticker in tickers:
+        df = db.get_prices(ticker, source=source)
+        if len(df) == 0:
+            raise ValueError(f"DB에 {ticker} 가격 데이터 없음 (source={source})")
+        # adjusted_close 우선, 없으면 close
+        if "adjusted_close" in df.columns and df["adjusted_close"].notna().any():
+            price_dfs[ticker] = df.set_index("date")["adjusted_close"]
+        else:
+            price_dfs[ticker] = df.set_index("date")["close"]
+
+    prices = pd.DataFrame(price_dfs).dropna()
+    prices.index = pd.to_datetime(prices.index)
+
+    # 월말로 리샘플
+    prices = prices.resample("ME").last().dropna()
+    returns = prices.pct_change().dropna()
+
+    # FX
+    fx_raw = db.get_fx(fx_pair)
+    if len(fx_raw) == 0:
+        raise ValueError(f"DB에 FX 데이터 없음 (pair={fx_pair})")
+    fx_raw.index = pd.to_datetime(fx_raw.index)
+    fx = fx_raw.resample("ME").last().dropna()
+
+    # 공통 기간
+    common = returns.index.intersection(fx.index)
+    if len(common) == 0:
+        raise ValueError("가격과 FX의 공통 기간이 없음")
+    returns = returns.loc[common]
+    prices = prices.loc[common]
+    fx = fx.loc[common]
+
+    return run_backtest(config, returns=returns, prices=prices, fx_rates=fx)

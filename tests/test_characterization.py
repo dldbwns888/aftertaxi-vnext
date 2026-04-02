@@ -230,3 +230,107 @@ class TestC4_SettlementGolden:
         """불변식: assessed = paid + unpaid."""
         t = result.tax
         assert abs(t.total_assessed_krw - t.total_paid_krw - t.total_unpaid_krw) < 1.0
+
+
+# ══════════════════════════════════════════════
+# C5: 손실이월 5년 만료 golden
+# ══════════════════════════════════════════════
+
+class TestC5_LossCarryforward:
+    """손실이월 5년 만료 시나리오.
+
+    must-match: 기존 엔진과 같은 이월/상쇄/만료 로직.
+    """
+
+    def test_loss_offsets_next_year_gain(self):
+        """1년차 손실 → 2년차 이익에서 상쇄 → 세금 감소."""
+        from aftertaxi.core.tax_engine import compute_capital_gains_tax
+
+        # Year 1: 순손실 100만원
+        r1 = compute_capital_gains_tax(
+            realized_gain_krw=0, realized_loss_krw=1_000_000,
+            carryforward=[], current_year=2024, rate=0.22,
+        )
+        assert r1.tax_krw == 0.0
+        assert len(r1.new_loss_carry) == 1
+        assert r1.new_loss_carry[0] == (2024, 1_000_000.0)
+
+        # Year 2: 순이익 500만원, 이월 100만원 상쇄
+        r2 = compute_capital_gains_tax(
+            realized_gain_krw=5_000_000, realized_loss_krw=0,
+            carryforward=r1.new_loss_carry + r1.carryforward_remaining,
+            current_year=2025, rate=0.22,
+        )
+        # 500만 - 이월100만 = 400만 - 공제250만 = 150만 × 22% = 33만
+        assert abs(r2.tax_krw - 330_000.0) < 1.0
+        assert len(r2.carryforward_used) == 1
+
+    def test_5year_boundary_still_valid(self):
+        """발생 후 4년까지는 유효 (5년 미만)."""
+        from aftertaxi.core.tax_engine import compute_capital_gains_tax
+
+        # 2020년 손실, 2024년(4년 후) 사용 → 유효
+        r = compute_capital_gains_tax(
+            realized_gain_krw=5_000_000, realized_loss_krw=0,
+            carryforward=[(2020, 1_000_000.0)],
+            current_year=2024, rate=0.22,
+        )
+        # 이월 상쇄 발생
+        assert len(r.carryforward_used) == 1
+        # 500만 - 이월100만 = 400만 - 공제250만 = 150만 × 22% = 33만
+        assert abs(r.tax_krw - 330_000.0) < 1.0
+
+    def test_6year_expired(self):
+        """발생 후 5년이면 만료 — 상쇄 불가."""
+        from aftertaxi.core.tax_engine import compute_capital_gains_tax
+
+        # 2019년 손실, 2024년(5년 후) → 만료
+        r = compute_capital_gains_tax(
+            realized_gain_krw=5_000_000, realized_loss_krw=0,
+            carryforward=[(2019, 1_000_000.0)],
+            current_year=2024, rate=0.22,
+        )
+        # 이월 상쇄 없음
+        assert len(r.carryforward_used) == 0
+        # 500만 - 공제250만 = 250만 × 22% = 55만
+        assert abs(r.tax_krw - 550_000.0) < 1.0
+
+    def test_multi_vintage_partial(self):
+        """다년도 이월 + 부분 상쇄."""
+        from aftertaxi.core.tax_engine import compute_capital_gains_tax
+
+        carryforward = [
+            (2021, 500_000.0),   # 3년 전, 유효
+            (2022, 300_000.0),   # 2년 전, 유효
+            (2019, 200_000.0),   # 5년 전, 만료!
+        ]
+        r = compute_capital_gains_tax(
+            realized_gain_krw=3_000_000, realized_loss_krw=0,
+            carryforward=carryforward,
+            current_year=2024, rate=0.22,
+        )
+        # 유효 이월: 50만 + 30만 = 80만 (2019년 20만은 만료)
+        # 300만 - 80만 = 220만 - 공제250만 = 0 → 세금 0 (공제 이내)
+        assert r.tax_krw == 0.0
+        assert len(r.carryforward_used) == 2  # 2021, 2022만 사용
+
+    def test_carry_accumulates_over_years(self):
+        """연속 손실 → 이월 누적."""
+        from aftertaxi.core.tax_engine import compute_capital_gains_tax
+
+        # Year 1: 손실
+        r1 = compute_capital_gains_tax(
+            realized_gain_krw=0, realized_loss_krw=500_000,
+            carryforward=[], current_year=2022,
+        )
+        # Year 2: 또 손실
+        carry2 = r1.new_loss_carry + r1.carryforward_remaining
+        r2 = compute_capital_gains_tax(
+            realized_gain_krw=0, realized_loss_krw=300_000,
+            carryforward=carry2, current_year=2023,
+        )
+        # Year 3: 이익 → 누적 이월 80만으로 상쇄
+        carry3 = r2.new_loss_carry + r2.carryforward_remaining
+        assert len(carry3) == 2  # 2022년 50만 + 2023년 30만
+        total_carry = sum(amt for _, amt in carry3)
+        assert abs(total_carry - 800_000.0) < 1.0
