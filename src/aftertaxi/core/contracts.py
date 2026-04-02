@@ -44,6 +44,23 @@ class TaxConfig:
     capital_gains_rate: float = 0.22
     annual_exemption: float = 2_500_000.0
     isa_exempt_limit: float = 2_000_000.0
+    dividend_withholding: float = 0.15   # 배당 원천징수 (미국 15%)
+
+
+# ── TaxConfig 프리셋 (aftertaxi account_spec.py에서 이식) ──
+
+TAXABLE_TAX = TaxConfig(
+    capital_gains_rate=0.22,
+    annual_exemption=2_500_000.0,
+    dividend_withholding=0.15,
+)
+
+ISA_TAX = TaxConfig(
+    capital_gains_rate=0.0,          # ISA 내 양도세 없음 (만기 시 정산)
+    annual_exemption=0.0,
+    dividend_withholding=0.0,        # ISA 내 배당세 이연
+    isa_exempt_limit=2_000_000.0,    # 일반형 2백만, 서민형 4백만
+)
 
 
 @dataclass(frozen=True)
@@ -59,6 +76,15 @@ class AccountConfig:
     allowed_assets: Optional[set] = None  # 허용 자산 집합. None이면 전체 허용
     transaction_cost_bps: float = 0.0    # 거래비용 (basis points, 매수/매도 각각 적용)
     priority: int = 0                     # 납입 우선순위 (낮을수록 먼저, allocator용)
+
+    def __post_init__(self):
+        if self.monthly_contribution < 0:
+            raise ValueError(f"monthly_contribution must be >= 0, got {self.monthly_contribution}")
+        if self.annual_cap is not None and self.annual_cap < self.monthly_contribution:
+            raise ValueError(
+                f"annual_cap ({self.annual_cap}) < monthly_contribution ({self.monthly_contribution}). "
+                f"연간 한도가 월납입금보다 작으면 납입 불가."
+            )
 
 
 @dataclass(frozen=True)
@@ -196,3 +222,53 @@ class EngineResult:
         if self.gross_pv_krw <= 0:
             return 0.0
         return 1.0 - self.net_pv_krw / self.gross_pv_krw
+
+
+# ══════════════════════════════════════════════
+# 팩토리 함수 (aftertaxi account_spec.py에서 이식)
+# ══════════════════════════════════════════════
+
+def make_taxable(
+    account_id: str = "taxable",
+    monthly: float = 1000.0,
+    allowed_assets: Optional[set] = None,
+    transaction_cost_bps: float = 0.0,
+    priority: int = 1,
+) -> AccountConfig:
+    """일반 과세 계좌 빠른 생성."""
+    return AccountConfig(
+        account_id=account_id,
+        account_type=AccountType.TAXABLE,
+        monthly_contribution=monthly,
+        rebalance_mode=RebalanceMode.CONTRIBUTION_ONLY,
+        tax_config=TAXABLE_TAX,
+        allowed_assets=allowed_assets,
+        transaction_cost_bps=transaction_cost_bps,
+        priority=priority,
+    )
+
+
+def make_isa(
+    account_id: str = "isa",
+    monthly: float = 1000.0,
+    annual_cap: float = 20_000_000.0,
+    allowed_assets: Optional[set] = None,
+    exempt_limit: float = 2_000_000.0,
+    priority: int = 0,
+) -> AccountConfig:
+    """ISA 계좌 빠른 생성. priority=0 (TAXABLE보다 먼저 채움)."""
+    return AccountConfig(
+        account_id=account_id,
+        account_type=AccountType.ISA,
+        monthly_contribution=monthly,
+        rebalance_mode=RebalanceMode.CONTRIBUTION_ONLY,
+        tax_config=TaxConfig(
+            capital_gains_rate=0.0,
+            annual_exemption=0.0,
+            dividend_withholding=0.0,
+            isa_exempt_limit=exempt_limit,
+        ),
+        annual_cap=annual_cap,
+        allowed_assets=allowed_assets,
+        priority=priority,
+    )

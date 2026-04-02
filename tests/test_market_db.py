@@ -140,3 +140,19 @@ class TestCrossIngest:
         sources = db.sources_for("SPY")
         assert "yfinance" in sources
         db.close()
+
+
+class TestFMPIngest:
+    def test_ingest_fmp(self):
+        """FMP → DB 적재 가능."""
+        import tempfile
+        tmp = Path(tempfile.mkdtemp()) / "fmp_test.db"
+        db_local = MarketDB(db_path=tmp)
+        n = db_local.ingest_fmp(["SPY"], "UJIxf58wru4fgcQfoCtHkiLcCFQVQED9",
+                                 start="2024-10-01", end="2024-12-31")
+        assert n > 0
+        sources = db_local.sources_for("SPY")
+        assert "fmp" in sources
+        df = db_local.get_prices("SPY", source="fmp")
+        assert len(df) > 0
+        db_local.close()

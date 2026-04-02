@@ -19,7 +19,11 @@ from __future__ import annotations
 
 from typing import Dict
 
+from aftertaxi.core.contracts import AccountType
 from aftertaxi.core.ledger import AccountLedger
+
+# account_type 상수: ledger는 str로 저장하므로 enum.value로 비교
+_TAXABLE = AccountType.TAXABLE.value
 
 
 # ══════════════════════════════════════════════
@@ -55,12 +59,12 @@ def settle_year_end(
         annual_div_krw = sum(
             l.annual_dividend_gross_usd * fx_rate
             for l in ledgers.values()
-            if l.account_type == "TAXABLE"
+            if l.account_type == _TAXABLE
         )
 
     # 3. 배당소득세 정산 (annual_dividend 리셋)
     for ledger in ledgers.values():
-        if ledger.account_type == "TAXABLE":
+        if ledger.account_type == _TAXABLE:
             ledger.settle_dividend_tax(fx_rate)
 
     # 4. 건보료 (배당소득 기반, person scope)
@@ -71,7 +75,7 @@ def settle_year_end(
         hi_result = compute_health_insurance(dividend_income_krw=annual_div_krw)
         if hi_result.premium_krw > 0:
             for ledger in ledgers.values():
-                if ledger.account_type == "TAXABLE":
+                if ledger.account_type == _TAXABLE:
                     ledger.apply_health_insurance(hi_result.premium_krw, fx_rate)
                     break
 
@@ -109,12 +113,12 @@ def settle_final(
         annual_div_krw = sum(
             l.annual_dividend_gross_usd * fx_rate
             for l in ledgers.values()
-            if l.account_type == "TAXABLE"
+            if l.account_type == _TAXABLE
         )
 
     # Pass 2: 배당세 + ISA
     for ledger in ledgers.values():
-        if ledger.account_type == "TAXABLE":
+        if ledger.account_type == _TAXABLE:
             ledger.settle_dividend_tax(fx_rate)
         if ledger.isa_exempt_limit > 0:
             ledger.settle_isa()
@@ -124,7 +128,7 @@ def settle_final(
         hi_result = compute_health_insurance(dividend_income_krw=annual_div_krw)
         if hi_result.premium_krw > 0:
             for ledger in ledgers.values():
-                if ledger.account_type == "TAXABLE":
+                if ledger.account_type == _TAXABLE:
                     ledger.apply_health_insurance(hi_result.premium_krw, fx_rate)
                     break
 

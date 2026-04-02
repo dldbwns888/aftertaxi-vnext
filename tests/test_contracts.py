@@ -140,3 +140,62 @@ class TestBacktestConfig:
         )
         assert config.n_months is None
         assert config.start_index == 0
+
+
+# ══════════════════════════════════════════════
+# Presets, Factories, Validation
+# ══════════════════════════════════════════════
+
+class TestPresets:
+    def test_taxable_tax(self):
+        from aftertaxi.core.contracts import TAXABLE_TAX
+        assert TAXABLE_TAX.capital_gains_rate == 0.22
+        assert TAXABLE_TAX.annual_exemption == 2_500_000.0
+        assert TAXABLE_TAX.dividend_withholding == 0.15
+
+    def test_isa_tax(self):
+        from aftertaxi.core.contracts import ISA_TAX
+        assert ISA_TAX.capital_gains_rate == 0.0
+        assert ISA_TAX.dividend_withholding == 0.0
+        assert ISA_TAX.isa_exempt_limit == 2_000_000.0
+
+
+class TestFactories:
+    def test_make_taxable(self):
+        from aftertaxi.core.contracts import make_taxable
+        t = make_taxable(monthly=500.0)
+        assert t.account_type == AccountType.TAXABLE
+        assert t.monthly_contribution == 500.0
+        assert t.priority == 1
+        assert t.tax_config.capital_gains_rate == 0.22
+
+    def test_make_isa(self):
+        from aftertaxi.core.contracts import make_isa
+        i = make_isa(monthly=300.0, annual_cap=5000.0)
+        assert i.account_type == AccountType.ISA
+        assert i.annual_cap == 5000.0
+        assert i.priority == 0  # ISA는 TAXABLE보다 먼저
+
+    def test_isa_before_taxable(self):
+        from aftertaxi.core.contracts import make_taxable, make_isa
+        t = make_taxable()
+        i = make_isa()
+        assert i.priority < t.priority
+
+
+class TestInputValidation:
+    def test_negative_monthly_raises(self):
+        with pytest.raises(ValueError, match="monthly_contribution"):
+            AccountConfig("t", AccountType.TAXABLE, -100)
+
+    def test_cap_less_than_monthly_raises(self):
+        with pytest.raises(ValueError, match="annual_cap"):
+            AccountConfig("t", AccountType.ISA, 1000.0, annual_cap=500.0)
+
+    def test_valid_config_ok(self):
+        c = AccountConfig("t", AccountType.TAXABLE, 1000.0)
+        assert c.monthly_contribution == 1000.0
+
+    def test_cap_equal_monthly_ok(self):
+        c = AccountConfig("t", AccountType.ISA, 1000.0, annual_cap=1000.0)
+        assert c.annual_cap == 1000.0

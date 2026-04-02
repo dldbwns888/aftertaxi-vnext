@@ -307,3 +307,51 @@ class TestSuiteRunner:
         text = report.summary_text()
         assert "Q60S40" in text
         assert "pass" in text.lower() or "warn" in text.lower() or "fail" in text.lower()
+
+
+# ══════════════════════════════════════════════
+# Robustness (CPCV, PBO)
+# ══════════════════════════════════════════════
+
+class TestCPCV:
+    def test_stable_signal(self):
+        from aftertaxi.validation.robustness import check_cpcv
+        er = _make_excess_returns(180, mean=0.008, std=0.03)
+        r = check_cpcv(er)
+        assert r.name == "cpcv"
+        assert r.value > 0  # pct_positive > 0
+
+    def test_short_data(self):
+        from aftertaxi.validation.robustness import check_cpcv
+        er = _make_excess_returns(30)
+        r = check_cpcv(er)
+        assert r.grade == Grade.WARN  # 데이터 부족
+
+
+class TestPBO:
+    def test_non_overfitted(self):
+        from aftertaxi.validation.robustness import check_pbo
+        rng = np.random.default_rng(42)
+        # 5개 전략 변형, 첫 번째가 진짜 알파
+        M = rng.normal(0.002, 0.03, (120, 5))
+        M[:, 0] += 0.005  # 첫 전략에 진짜 알파 추가
+        r = check_pbo(M)
+        assert r.name == "pbo"
+        # PBO < 100% (완전 과적합은 아님)
+        assert r.value < 1.0
+
+    def test_single_strategy(self):
+        from aftertaxi.validation.robustness import check_pbo
+        er = _make_excess_returns(120)
+        r = check_pbo(er.reshape(-1, 1))
+        assert r.grade == Grade.WARN  # N=1이면 PBO 계산 불가
+
+
+class TestFullValidate:
+    def test_full_mode(self):
+        result = _make_engine_result()
+        er = _make_excess_returns(120, mean=0.008, std=0.03)
+        report = validate(result=result, excess_returns=er,
+                          strategy_name="full_test", full=True)
+        # full=True면 basic(5) + statistical(3) + heavy(1 bootstrap) + stability(2)
+        assert len(report.checks) >= 10

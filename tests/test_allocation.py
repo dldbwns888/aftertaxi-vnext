@@ -79,12 +79,16 @@ class TestAllocationPlanner:
 
     def test_unallocated_warning(self):
         """cap에 막혀 배분 못 한 돈이 있으면 경고."""
-        accts = [AccountConfig("isa", AccountType.ISA, 1000.0,
+        # monthly=500, cap=500 → 1회 납입 후 cap 소진
+        # total=2000 → 500만 배정, 1500 미배정
+        accts = [AccountConfig("isa", AccountType.ISA, 500.0,
                                annual_cap=500.0)]
         planner = AllocationPlanner(accts)
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            orders = planner.plan({"SPY": 1.0}, 1000.0, 0)
+            # ytd=500이면 이미 cap 소진 → monthly 전액 미배정
+            orders = planner.plan({"SPY": 1.0}, 2000.0, 0,
+                                  ytd_contributions={"isa": 500.0})
             assert len(w) == 1
             assert "미배정" in str(w[0].message)
 
