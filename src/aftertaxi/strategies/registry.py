@@ -40,10 +40,13 @@ class StrategyRegistry:
     def __init__(self) -> None:
         self._builders: Dict[str, Callable[..., StrategySpec]] = {}
 
-    def register(self, key: str):
-        """데코레이터: 빌더 함수를 등록."""
+    def register(self, key: str, metadata=None):
+        """데코레이터: 빌더 함수를 등록. metadata 있으면 같이 등록."""
         def deco(func: Callable[..., StrategySpec]):
             self._builders[key] = func
+            if metadata is not None:
+                from aftertaxi.strategies.metadata import register_metadata
+                register_metadata(metadata)
             return func
         return deco
 

@@ -72,11 +72,40 @@ def load_yfinance(
     start: str = "2006-01-01",
     end: Optional[str] = None,
     fx_rate: float = 1300.0,
+    cache: bool = False,
+    max_age_hours: float = 24.0,
 ) -> MarketData:
     """yfinance에서 실제 ETF 가격 로드.
 
-    FX는 고정 (FRED 없이 간단히).
+    FX는 고정.
+    yfinance Close = split-adjusted, 배당 미반영.
+    cache=True면 로컬 SQLite에 캐시.
     """
+    # 캐시 체크
+    if cache:
+        from aftertaxi.apps.data_cache import DataCache
+        dc = DataCache()
+        cached_frames = {}
+        all_cached = True
+        for a in assets:
+            df = dc.get_prices(a, "yfinance", max_age_hours=max_age_hours)
+            if df is not None:
+                cached_frames[a] = df[a]
+            else:
+                all_cached = False
+                break
+
+        if all_cached and cached_frames:
+            monthly = pd.DataFrame(cached_frames).resample("ME").last().dropna()
+            returns = monthly.pct_change().dropna()
+            prices = monthly.loc[returns.index]
+            fx = pd.Series(fx_rate, index=returns.index)
+            return MarketData(
+                returns=returns, prices=prices, fx=fx,
+                source="yfinance(cached)", n_months=len(returns),
+                start_date=returns.index[0], end_date=returns.index[-1],
+            )
+
     try:
         import yfinance as yf
     except ImportError:
@@ -91,10 +120,16 @@ def load_yfinance(
 
     monthly = close.resample("ME").last().dropna()
     returns = monthly.pct_change().dropna()
-
-    # 공통 인덱스
     prices = monthly.loc[returns.index]
     fx = pd.Series(fx_rate, index=returns.index)
+
+    # 캐시 저장
+    if cache:
+        from aftertaxi.apps.data_cache import DataCache
+        dc = DataCache()
+        for a in assets:
+            if a in monthly.columns:
+                dc.put_prices(a, "yfinance", monthly[[a]])
 
     return MarketData(
         returns=returns, prices=prices, fx=fx,
@@ -176,6 +211,7 @@ def load_lane_a_data(
 def load_market_data(
     assets: List[str],
     source: str = "synthetic",
+    cache: bool = False,
     **kwargs,
 ) -> MarketData:
     """통합 데이터 로드.
@@ -184,12 +220,13 @@ def load_market_data(
     ----------
     assets : 자산 티커 리스트
     source : "synthetic", "yfinance", "yfinance_fx", "lane_a"
+    cache : True면 로컬 캐시 사용 (yfinance 소스만)
     **kwargs : 소스별 추가 파라미터
     """
     if source == "synthetic":
         return load_synthetic(assets, **kwargs)
     elif source == "yfinance":
-        return load_yfinance(assets, **kwargs)
+        return load_yfinance(assets, cache=cache, **kwargs)
     elif source == "yfinance_fx":
         return load_yfinance_with_fx(assets, **kwargs)
     elif source == "lane_a":
