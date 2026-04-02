@@ -64,3 +64,31 @@ class TestCLI:
         out = capsys.readouterr().out
         assert "Lane D" in out
         assert "생존률" in out
+
+    def test_lane_d_compare(self, capsys):
+        path = self._write_config({"strategy": {"type": "spy_bnh"}})
+        result = main([path, "--months", "24",
+                       "--lane-d-compare", "--lane-d-paths", "3", "--lane-d-years", "5"])
+        out = capsys.readouterr().out
+        assert "DCA vs Lump Sum" in out
+        assert "Delta" in out
+
+    def test_lane_d_and_compare_prefers_compare(self, capsys):
+        """둘 다 켜면 compare가 우선."""
+        path = self._write_config({"strategy": {"type": "spy_bnh"}})
+        main([path, "--months", "24",
+              "--lane-d", "--lane-d-compare",
+              "--lane-d-paths", "3", "--lane-d-years", "5"])
+        out = capsys.readouterr().out
+        assert "DCA vs Lump Sum" in out
+        # survival-only 출력이 아닌 compare 출력
+        assert "Lump Sum" in out
+
+    def test_lane_d_only_no_compare(self, capsys):
+        """--lane-d만이면 survival report만."""
+        path = self._write_config({"strategy": {"type": "spy_bnh"}})
+        main([path, "--months", "24",
+              "--lane-d", "--lane-d-paths", "3", "--lane-d-years", "5"])
+        out = capsys.readouterr().out
+        assert "Synthetic" in out
+        assert "DCA vs Lump Sum" not in out

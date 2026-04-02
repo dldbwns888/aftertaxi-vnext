@@ -108,7 +108,8 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=42, help="합성 데이터 시드")
 
     # Lane D
-    parser.add_argument("--lane-d", action="store_true", help="Lane D 합성 100년 생존 시뮬레이션")
+    parser.add_argument("--lane-d", action="store_true", help="Lane D 합성 생존 시뮬레이션")
+    parser.add_argument("--lane-d-compare", action="store_true", help="Lane D DCA vs Lump Sum 비교")
     parser.add_argument("--lane-d-paths", type=int, default=50, help="Lane D 경로 수")
     parser.add_argument("--lane-d-years", type=int, default=100, help="Lane D 경로 길이 (년)")
     parser.add_argument("--lane-d-jobs", type=int, default=1, help="Lane D 병렬 워커 수")
@@ -153,9 +154,8 @@ def main(argv=None):
         _print_result(result, attribution)
 
     # 6. Lane D (optional)
-    if args.lane_d:
+    if args.lane_d_compare or args.lane_d:
         from aftertaxi.lanes.lane_d.synthetic import SyntheticMarketConfig
-        from aftertaxi.lanes.lane_d.run import run_lane_d
 
         synth_config = SyntheticMarketConfig(
             n_paths=args.lane_d_paths,
@@ -163,15 +163,30 @@ def main(argv=None):
             seed=args.seed,
             base_fx_rate=args.fx,
         )
-        lane_d_report = run_lane_d(
-            source_returns=returns,
-            backtest_config=config,
-            synthetic_config=synth_config,
-            actual_result=result,
-            n_jobs=args.lane_d_jobs,
-        )
-        print(lane_d_report.summary_text())
-        print()
+
+        if args.lane_d_compare:
+            # compare가 survival을 포함하는 상위 출력
+            from aftertaxi.lanes.lane_d.compare import run_lane_d_comparison
+            compare_report = run_lane_d_comparison(
+                source_returns=returns,
+                backtest_config=config,
+                synthetic_config=synth_config,
+                n_jobs=args.lane_d_jobs,
+            )
+            print(compare_report.summary_text())
+            print()
+        else:
+            # 기존 survival only
+            from aftertaxi.lanes.lane_d.run import run_lane_d
+            lane_d_report = run_lane_d(
+                source_returns=returns,
+                backtest_config=config,
+                synthetic_config=synth_config,
+                actual_result=result,
+                n_jobs=args.lane_d_jobs,
+            )
+            print(lane_d_report.summary_text())
+            print()
 
     return result
 
