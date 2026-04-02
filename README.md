@@ -9,30 +9,59 @@
 
 ### 할 수 있는 것
 - FX-only 코어: C/O + FULL rebalance, TAXABLE + ISA, AVGCOST
-- Lane A: 실제 ETF + FX 백테스트 (yfinance)
+- 세금 버킷 분리: 양도세 / 배당세 / 건보료(MVP) 항목별 추적
+- 거래비용, 배당(원천징수+재투자), EventJournal
+- ResultAttribution: 세후 결과 원인 분해
+- Lane A: 실제 ETF + FX (Alpha Vantage + FRED 추천, yfinance/EODHD/FMP도 지원)
+  - dual-path: ADJUSTED (배당 반영 가격) vs EXPLICIT_DIVIDENDS (배당 분리)
 - Lane B: 합성 레버리지 역사 + A/B overlap calibration
-- Lane C: Block Bootstrap Monte Carlo 분포 (세후)
-- 기존 엔진 대비 7개 시나리오 shadow match 통과
+- Lane C: Block Bootstrap Monte Carlo (provenance + joblib 병렬화)
+- MarketDB: SQLite 멀티소스 통합 데이터베이스
+- 워크벤치: 전략 비교 React UI + JSON adapter
 
 ### 아직 못 하는 것
-- 건보료, BAND/BUDGET 리밸, 복잡한 이월결손금 만료
+- BAND/BUDGET 리밸, 복잡한 이월결손금 만료
 - 전략 compile 파이프라인 (GUI/AI용)
 - Lane D (execution realism)
-- DuckDB 데이터 파이프라인
+- 종합과세 누진구간 완전체 (현재 고정 세율 MVP)
+- 건보료 parity (현재 배당소득 기반 MVP, 이자소득 미포함)
+
+### 미구현 계약 필드 (설정 시 예외 발생)
+- `AccountConfig.annual_cap` → `NotImplementedError`
+- `AccountConfig.allowed_assets` → `NotImplementedError`
+- `RebalanceMode.BUDGET` → `NotImplementedError`
+- `lot_method != "AVGCOST"` → `NotImplementedError`
 
 ## 구조
 
 ```
 src/aftertaxi/
   core/
-    contracts.py    — typed 입출력 계약 + 세금 불변식 검증
-    facade.py       — run_backtest() 단일 진입점
-    runner.py       — 월 루프 + C/O + FULL + 정산 + 집계
-    ledger.py       — FX-only 계좌 원장 (단일 클래스)
+    contracts.py          — typed 입출력 계약 + 세금 불변식
+    facade.py             — run_backtest() 단일 진입점 + 미구현 설정 검증
+    runner.py             — 월 루프 + C/O + FULL + 집계
+    settlement.py         — 정산 순서 (account + person scope)
+    ledger.py             — FX-only 계좌 원장
+    tax_engine.py         — 순수 세금 계산 (양도세 + ISA + 배당세 + 건보료)
+    dividend.py           — 배당 이벤트 모델
+    event_journal.py      — opt-in 이벤트 로그
+    attribution.py        — ResultAttribution (세후 결과 원인 분해)
+    workbench_adapter.py  — 엔진→워크벤치 JSON 직렬화
   lanes/
-    lane_a/         — 실제 ETF+FX 로더 + run_lane_a()
-    lane_b/         — 합성 레버리지 + overlap calibration
-    lane_c/         — circular block bootstrap + 분포 리포트
+    lane_a/
+      loader.py           — yfinance + AV/FMP explicit dividend 로더
+      data_contract.py    — PriceMode enum, LaneAData, validate()
+      compare.py          — adjusted vs explicit 비교 harness
+    lane_b/               — 합성 장기역사
+    lane_c/
+      bootstrap.py        — Circular Block Bootstrap + PathProvenance
+      run.py              — 병렬 실행(joblib) + DistributionReport
+  loaders/
+    alphavantage.py       — Alpha Vantage (close/adj/div 분리, 26년+ 무료)
+    fred.py               — FRED FX (DEXKOUS, 30년+ 무료)
+    eodhd.py              — EODHD (close/adj 분리, 배당 상세)
+    fmp.py                — FMP (close/adj/div, 30년+)
+    market_db.py          — SQLite 멀티소스 통합 DB
 ```
 
 ## 세금 불변식
@@ -43,72 +72,44 @@ net_pv_krw   == gross_pv_krw − tax_unpaid_krw
 assessed     == paid + unpaid
 ```
 
-## 미구현 계약 필드
+## 세금 버킷
 
-contracts.py에 정의되었지만 엔진에서 아직 사용하지 않는 것:
-- `AccountConfig.annual_cap` — ISA 연간 한도 (TODO: runner에서 cap 체크)
-- `AccountConfig.allowed_assets` — 자산 필터 (TODO: runner에서 필터링)
-- `RebalanceMode.BUDGET` — 세금 예산 리밸 (TODO)
+```
+settle_annual_tax      → _capital_gains_tax_assessed_krw
+settle_dividend_tax    → _dividend_tax_assessed_krw
+apply_health_insurance → _health_insurance_assessed_krw
+(총합: _total_tax_assessed_krw)
+```
+
+## 건보료 MVP
+
+- 근사 대상: 직장가입자 보수 외 소득월액보험료 (투자소득 부분)
+- 법적 근거: 시행령 제41조 — 양도소득은 소득월액 산정 대상 아님
+- 포함: 배당소득. 제외: 양도소득
+- 기준: 연 2천만원 초과. 세율: 6.99%. 상한: 연 4천만원
+- ⚠ person-scope premium을 첫 TAXABLE 계좌에 귀속 (MVP 한계)
+
+## 데이터 소스
+
+| 소스 | close (배당 미반영) | adjusted | 배당 | 무료 이력 |
+|---|---|---|---|---|
+| Alpha Vantage | ✅ | ✅ | 월별 금액 | 26년+ |
+| FMP | ✅ | ✅ | 상세 (ex/pay/record) | 30년+ |
+| EODHD | ✅ | ✅ | 상세 | 1년 |
+| yfinance | ⚠ 배당 반영 | — | per-share | 무제한 |
+| FRED | — | — | — | FX 30년+ |
+
+⚠ yfinance v1.2의 Close는 배당이 반영된 adjusted close (4소스 교차 비교로 확인).
+EXPLICIT_DIVIDENDS 경로에는 AV/FMP close를 사용해야 이중 계산 방지.
 
 ## 테스트
 
 ```bash
-# 전체 (기존 엔진 + yfinance 필요)
+# 전체 (기존 엔진 + yfinance + API 키 필요)
 PYTHONPATH=/path/to/aftertaxi:src python -m pytest tests/ -q
 
 # 코어만 (외부 의존 없음)
-python -m pytest tests/test_contracts.py -v
-
-# Oracle shadow (기존 엔진 비교)
-PYTHONPATH=/path/to/aftertaxi:src python -m pytest tests/test_oracle_shadow.py -v
-
-# Lane C 스모크 (실데이터, ~20초)
-PYTHONPATH=src python -m pytest tests/test_lane_c_smoke.py -v -s
+python -m pytest tests/test_contracts.py tests/test_unsupported_config.py -v
 ```
 
-## Lane C 스모크 결과 (100 paths, 20yr, Q60S40 C/O)
-
-| 지표 | C(A) 실ETF | C(B) 합성 |
-|---|---|---|
-| median mult | 4.97x | 3.94x |
-| 5th percentile | 1.39x | 1.35x |
-| 파산확률 | 3.0% | 1.0% |
-| CVaR 5% | 1.00x | 1.05x |
-
-*C(A)는 2006~2024 성장주 슈퍼사이클 편향. C(B)는 1990~2024 합성 오차 포함.
-결론서에는 둘 다 동등하게 제시.*
-
-## 로드맵
-
-| 완료 | 내용 |
-|---|---|
-| ✅ PR 1 | contracts + facade + oracle 3개 |
-| ✅ PR 2 | 새 ledger + runner (C/O) |
-| ✅ PR 3 | FULL rebalance + oracle 4 |
-| ✅ PR 4 | Lane A loader |
-| ✅ PR 5 | Lane B 합성 + A/B calibration |
-| ✅ PR 6 | Lane C bootstrap distribution |
-| ✅ +α | Oracle 7개 + C(A)/C(B) 스모크 |
-
-| 남은 것 | 내용 |
-|---|---|
-| 🔲 | 1,000 paths 수렴 확인 → 결론서 숫자 확정 |
-| 🔲 | 블록 길이 sensitivity (12/24/36) |
-| 🔲 | 건보료 등 세금 parity 보강 |
-| 🔲 | Lane D 설계 문서 (구현은 실투자 시점) |
-| 🔲 | 전략 compile 파이프라인 (GUI 전 필수) |
-
-## Lane 구조
-
-| Lane | 질문 | 데이터 | 상태 |
-|---|---|---|---|
-| A | 현실에서 깨지나? | 실제 ETF | ✅ |
-| B | 장기 이론이 서나? | 합성 152년 | ✅ |
-| C | 운이 나쁘면? | Bootstrap 10,000개 | ✅ |
-| D | 내가 못하면? | 실행 노이즈 | 📝 설계만 |
-
-## 기존 레포와의 관계
-
-- 기존 `aftertaxi`: `v3.1.0-freeze` 태그, 동결. 413 tests, 연구 결론 확정.
-- vnext는 기존의 **대체품이 아니라 구조 재설계 실험장**.
-- 연구 숫자를 낼 때는 양쪽 엔진을 돌려서 비교해야 함.
+240 tests, ~35초.
