@@ -254,8 +254,11 @@ def _execute_full_rebalance(
             px = price_map.get(asset, 0.0)
             current_mv[asset] = pos.qty * px
 
-    # 목표 시가
-    desired: Dict[str, float] = {a: total_value * w for a, w in target_weights.items()}
+    # 목표 시가 (weights 정규화 — C/O와 동일하게 100% 투자)
+    tw_sum = sum(target_weights.values())
+    if tw_sum <= 0:
+        return
+    desired: Dict[str, float] = {a: total_value * (w / tw_sum) for a, w in target_weights.items()}
 
     # delta 계산
     all_assets = set(list(current_mv.keys()) + list(desired.keys()))

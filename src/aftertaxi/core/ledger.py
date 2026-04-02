@@ -185,36 +185,48 @@ class AccountLedger:
     # ── 세금 정산 ──
 
     def settle_annual_tax(self, current_year: int = 0) -> float:
-        """연말 세금 정산. Returns: tax_krw."""
+        """연말 세금 정산. Returns: tax_krw.
+
+        이월결손금 규칙:
+          - 각 항목은 (발생연도, 금액) 튜플
+          - 5년 초과 시 만료 (current_year - yr >= 5)
+          - 부분 상쇄 시 원래 연도 유지 (리셋 금지)
+          - net < 0이면 올해 손실을 이월 + 기존 carry 유지
+        """
         net = self.annual_realized_gain_krw - self.annual_realized_loss_krw
 
-        # 이월결손금 차감
-        remaining_loss = 0.0
-        new_carry = []
+        # 1. 만료되지 않은 이월결손금만 필터 (연도 보존)
+        valid_carry = []
         for yr, amt in self.loss_carryforward_krw:
             if current_year > 0 and yr > 0 and (current_year - yr) >= 5:
                 continue  # 5년 만료
-            remaining_loss += amt
+            if amt > 1e-6:
+                valid_carry.append((yr, amt))
 
+        # 2. net > 0이면 이월결손금으로 상쇄 (오래된 것부터, 연도 보존)
+        new_carry = []
         if net > 0:
-            # 이월결손금으로 상쇄
-            offset = min(net, remaining_loss)
-            net -= offset
-            remaining_loss -= offset
+            for yr, amt in valid_carry:
+                if net <= 0:
+                    new_carry.append((yr, amt))
+                    continue
+                offset = min(net, amt)
+                net -= offset
+                remainder = amt - offset
+                if remainder > 1e-6:
+                    new_carry.append((yr, remainder))  # 원래 연도 유지
         else:
-            # 올해 순손실 → 이월
-            new_carry.append((current_year, abs(net)))
+            # 3. net <= 0이면 올해 손실을 이월 + 기존 carry 전부 유지 (L2 수정)
+            if abs(net) > 1e-6:
+                new_carry.append((current_year, abs(net)))
+            new_carry.extend(valid_carry)  # 기존 이월결손금 보존
             net = 0.0
 
-        # 남은 이월결손금 유지
-        if remaining_loss > 1e-6:
-            new_carry.append((current_year, remaining_loss))
-
-        # 공제 적용
+        # 4. 공제 적용
         taxable = max(0.0, net - self.annual_exemption)
         tax_krw = taxable * self.tax_rate
 
-        # 상태 갱신
+        # 5. 상태 갱신
         self._total_tax_assessed_krw += tax_krw
         self.unpaid_tax_liability_krw += tax_krw
         self.loss_carryforward_krw = new_carry
