@@ -243,3 +243,97 @@ class TestEventJournal:
         assert len(tax_paid) == 1
         assert tax_assessed[0].amount_krw > 0
         assert tax_paid[0].amount_usd > 0
+
+
+# ══════════════════════════════════════════════
+# 엔드투엔드: facade 경유 journal
+# ══════════════════════════════════════════════
+
+class TestJournalEndToEnd:
+
+    def _make_data(self, n=24):
+        idx = pd.date_range("2020-01-31", periods=n, freq="ME")
+        prices = pd.DataFrame({"SPY": [100 * (1.01 ** i) for i in range(n)]}, index=idx)
+        fx = pd.Series(1300.0, index=idx)
+        returns = prices.pct_change().fillna(0.0)
+        return returns, prices, fx
+
+    def test_facade_journal_captures_all_events(self):
+        """facade 경유 실행에서 journal에 이벤트가 쌓인다."""
+        returns, prices, fx = self._make_data()
+        journal = EventJournal()
+
+        result = run_backtest(
+            BacktestConfig(
+                accounts=[AccountConfig("t", AccountType.TAXABLE, 1000.0,
+                    transaction_cost_bps=50)],
+                strategy=StrategyConfig("test", {"SPY": 1.0}),
+            ),
+            returns=returns, prices=prices, fx_rates=fx,
+            journal=journal,
+        )
+
+        # 24개월 → deposit 24번, buy 24번
+        deposits = journal.filter_by_type("deposit")
+        buys = journal.filter_by_type("buy")
+        assert len(deposits) == 24
+        assert len(buys) == 24
+
+        # fee가 기록됨
+        assert journal.total_fees() > 0
+
+    def test_facade_journal_none_still_works(self):
+        """journal=None이면 기존과 동일하게 작동."""
+        returns, prices, fx = self._make_data()
+
+        result = run_backtest(
+            BacktestConfig(
+                accounts=[AccountConfig("t", AccountType.TAXABLE, 1000.0)],
+                strategy=StrategyConfig("test", {"SPY": 1.0}),
+            ),
+            returns=returns, prices=prices, fx_rates=fx,
+            journal=None,
+        )
+        assert result.gross_pv_usd > 0
+
+    def test_facade_journal_tax_events(self):
+        """세금 정산 이벤트도 facade 경유로 기록된다."""
+        returns, prices, fx = self._make_data(36)  # 3년 → 연도 전환 2번
+        journal = EventJournal()
+
+        result = run_backtest(
+            BacktestConfig(
+                accounts=[AccountConfig("t", AccountType.TAXABLE, 1000.0)],
+                strategy=StrategyConfig("test", {"SPY": 1.0}),
+            ),
+            returns=returns, prices=prices, fx_rates=fx,
+            journal=journal,
+        )
+
+        # C/O 양수 수익 → 최종 청산 시 세금 발생
+        tax_events = journal.filter_by_type("tax_assessed")
+        assert len(tax_events) >= 1  # 최소 최종 청산 정산
+
+    def test_journal_with_fee_attribution(self):
+        """journal에서 총 거래비용 vs 총 세금 비교 가능."""
+        returns, prices, fx = self._make_data()
+        journal = EventJournal()
+
+        result = run_backtest(
+            BacktestConfig(
+                accounts=[AccountConfig("t", AccountType.TAXABLE, 1000.0,
+                    transaction_cost_bps=100)],  # 1% 높은 fee
+                strategy=StrategyConfig("test", {"SPY": 1.0}),
+            ),
+            returns=returns, prices=prices, fx_rates=fx,
+            journal=journal,
+        )
+
+        total_fee = journal.total_fees()
+        total_tax = journal.total_by_type("tax_assessed", "amount_krw")
+
+        # 둘 다 양수
+        assert total_fee > 0
+        # C/O는 매도 없어서 최종 청산까지 세금 이벤트가 적을 수 있지만
+        # 최종 청산 시 assessed > 0
+        assert total_tax >= 0

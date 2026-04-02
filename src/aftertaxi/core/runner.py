@@ -37,6 +37,7 @@ def run_engine(
     config: BacktestConfig,
     prices: pd.DataFrame,
     fx_rates: pd.Series,
+    journal=None,
 ) -> EngineResult:
     """FX-only 백테스트 실행.
 
@@ -45,6 +46,7 @@ def run_engine(
     config : BacktestConfig
     prices : DataFrame, index=datetime, columns=assets, values=USD price
     fx_rates : Series, index=datetime, values=USDKRW rate
+    journal : Optional[EventJournal], 이벤트 로그 (None이면 기록 안 함)
     """
     returns = prices.pct_change().fillna(0.0)
     index = prices.index
@@ -63,6 +65,7 @@ def run_engine(
             isa_exempt_limit=ac.tax_config.isa_exempt_limit if ac.account_type == AccountType.ISA else 0.0,
             isa_excess_rate=ac.tax_config.capital_gains_rate if ac.account_type == AccountType.ISA else 0.0,
             transaction_cost_bps=ac.transaction_cost_bps,
+            journal=journal,
         )
 
     target_weights = config.strategy.weights

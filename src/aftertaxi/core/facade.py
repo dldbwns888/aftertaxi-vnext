@@ -25,11 +25,13 @@ def run_backtest(
     prices: Optional[pd.DataFrame] = None,
     fx_store=None,
     fx_rates: Optional[pd.Series] = None,
+    journal=None,
 ) -> EngineResult:
     """단일 진입점. config + 데이터 → typed EngineResult.
 
     prices가 없으면 returns에서 누적 가격을 역산.
     fx_store(legacy FxRateStore) 또는 fx_rates(pd.Series)를 받음.
+    journal: Optional[EventJournal]. 넘기면 내부에서 이벤트가 기록됨.
     """
     if prices is None:
         prices = _returns_to_prices(returns)
@@ -40,7 +42,7 @@ def run_backtest(
     if fx_rates is None:
         raise ValueError("fx_rates 또는 fx_store를 제공해야 합니다.")
 
-    return run_engine(config, prices, fx_rates)
+    return run_engine(config, prices, fx_rates, journal=journal)
 
 
 def _returns_to_prices(returns: pd.DataFrame, base: float = 100.0) -> pd.DataFrame:
