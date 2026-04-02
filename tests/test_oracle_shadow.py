@@ -475,5 +475,221 @@ class TestOracle4_FullRebalance:
     def test_net_less_than_gross(self):
         """세금 납부 후 net < gross."""
         new, _ = self._run_both()
-        # 세금이 발생했으면 net < gross (또는 unpaid > 0이었다가 납부)
         assert new.tax.total_paid_krw > 0 or new.tax.total_unpaid_krw > 0
+
+
+# ══════════════════════════════════════════════
+# Oracle 5: 48개월 FULL — 연도 경계 3회 정산
+# ══════════════════════════════════════════════
+
+class TestOracle5_YearBoundarySettlement:
+    """4년간 FULL rebalance — 매년 세금 정산이 정확히 일어나는지."""
+
+    N = 48
+    ASSETS = ["SPY", "QQQ"]
+    MONTHLY = 1000.0
+
+    def _make_prices(self):
+        idx = _monthly_index(self.N)
+        spy = [100.0]
+        qqq = [100.0]
+        for i in range(1, self.N):
+            spy.append(spy[-1] * 1.008)
+            qqq.append(qqq[-1] * 1.015)
+        return pd.DataFrame({"SPY": spy, "QQQ": qqq}, index=idx)
+
+    def _run_both(self):
+        prices = self._make_prices()
+        returns = _returns_from_prices(prices)
+        fx_series = _constant_fx(self.N)
+        fx_store = FxRateStore.from_series(fx_series)
+        strategy = _legacy_strategy(self.N, self.ASSETS, weight=0.5, rebal_every=1)
+
+        spec = AccountSpec(
+            account_id="taxable",
+            account_type=LegacyAccountType.TAXABLE,
+            tax_rule=TAXABLE_TAX,
+            contribution_rule=ContributionRule(monthly_amount=self.MONTHLY, priority=0),
+            rebalance_rule=RebalanceRule(mode=LegacyRebalMode.FULL, lot_method="AVGCOST"),
+        )
+        runner = PortfolioRunnerV2(
+            returns=returns, accounts=[spec],
+            prices=prices, fx_store=fx_store,
+        )
+        old_result = runner.run(strategy)
+
+        new_result = run_backtest(
+            BacktestConfig(
+                accounts=[AccountConfig(
+                    account_id="taxable",
+                    account_type=AccountType.TAXABLE,
+                    monthly_contribution=self.MONTHLY,
+                    rebalance_mode=RebalanceMode.FULL,
+                    lot_method="AVGCOST",
+                )],
+                strategy=StrategyConfig(
+                    name="oracle_yearbound", weights={"SPY": 0.5, "QQQ": 0.5},
+                    rebalance_every=1,
+                ),
+            ),
+            returns=returns, prices=prices, fx_store=fx_store,
+        )
+        return new_result, old_result
+
+    def test_shadow_match(self):
+        new, old = self._run_both()
+        assert_shadow_match(new, old, fx_enabled=True)
+
+    def test_48_months(self):
+        new, _ = self._run_both()
+        assert new.n_months == 48
+
+    def test_tax_from_rebalancing(self):
+        """4년간 FULL → 세금 발생."""
+        new, _ = self._run_both()
+        assert new.tax.total_assessed_krw > 0
+
+
+# ══════════════════════════════════════════════
+# Oracle 6: ISA FULL — ISA 만기 세금 발생
+# ══════════════════════════════════════════════
+
+class TestOracle6_ISASettlement:
+    """ISA + FULL → 실현이익 → ISA 만기 초과분 과세."""
+
+    N = 36
+    ASSETS = ["SPY", "QQQ"]
+    MONTHLY = 1000.0
+
+    def _make_prices(self):
+        """강한 상승 → ISA 비과세 한도 초과 유도."""
+        idx = _monthly_index(self.N)
+        spy = [100.0]
+        qqq = [100.0]
+        for _ in range(1, self.N):
+            spy.append(spy[-1] * 1.02)
+            qqq.append(qqq[-1] * 1.03)
+        return pd.DataFrame({"SPY": spy, "QQQ": qqq}, index=idx)
+
+    def _run_both(self):
+        prices = self._make_prices()
+        returns = _returns_from_prices(prices)
+        fx_series = _constant_fx(self.N)
+        fx_store = FxRateStore.from_series(fx_series)
+        strategy = _legacy_strategy(self.N, self.ASSETS, weight=0.5, rebal_every=1)
+
+        isa_spec = AccountSpec(
+            account_id="isa",
+            account_type=LegacyAccountType.ISA,
+            tax_rule=ISA_TAX,
+            contribution_rule=ContributionRule(
+                monthly_amount=self.MONTHLY, priority=0, annual_cap=20_000_000.0,
+            ),
+            rebalance_rule=RebalanceRule(mode=LegacyRebalMode.FULL, lot_method="AVGCOST"),
+        )
+        runner = PortfolioRunnerV2(
+            returns=returns, accounts=[isa_spec],
+            prices=prices, fx_store=fx_store,
+        )
+        old_result = runner.run(strategy)
+
+        new_result = run_backtest(
+            BacktestConfig(
+                accounts=[AccountConfig(
+                    account_id="isa",
+                    account_type=AccountType.ISA,
+                    monthly_contribution=self.MONTHLY,
+                    rebalance_mode=RebalanceMode.FULL,
+                    lot_method="AVGCOST",
+                    annual_cap=20_000_000.0,
+                    tax_config=TaxConfig(
+                        capital_gains_rate=0.099,
+                        isa_exempt_limit=2_000_000.0,
+                    ),
+                )],
+                strategy=StrategyConfig(
+                    name="oracle_isa", weights={"SPY": 0.5, "QQQ": 0.5},
+                    rebalance_every=1,
+                ),
+            ),
+            returns=returns, prices=prices, fx_store=fx_store,
+        )
+        return new_result, old_result
+
+    def test_shadow_match(self):
+        new, old = self._run_both()
+        assert_shadow_match(new, old, fx_enabled=True)
+
+    def test_isa_tax_positive(self):
+        """강한 상승 + FULL → ISA 비과세 한도 초과 → 세금 > 0."""
+        new, _ = self._run_both()
+        assert new.tax.total_assessed_krw > 0, "ISA 만기 세금이 0"
+
+
+# ══════════════════════════════════════════════
+# Oracle 7: 60개월 손실→회복 — 이월결손금 상쇄
+# ══════════════════════════════════════════════
+
+class TestOracle7_CarryforwardOffset:
+    """손실 구간 → 회복 구간: 이월결손금으로 세금 감면."""
+
+    N = 60
+    ASSETS = ["SPY"]
+    MONTHLY = 1000.0
+
+    def _make_prices(self):
+        """2년 하락 → 3년 상승. FULL이면 하락기 매도 → 손실 실현 → 이월."""
+        idx = _monthly_index(self.N)
+        p = [100.0]
+        for i in range(1, self.N):
+            if i < 24:
+                p.append(p[-1] * 0.98)  # 월 -2%
+            else:
+                p.append(p[-1] * 1.025)  # 월 +2.5%
+        return pd.DataFrame({"SPY": p}, index=idx)
+
+    def _run_both(self):
+        prices = self._make_prices()
+        returns = _returns_from_prices(prices)
+        fx_series = _constant_fx(self.N)
+        fx_store = FxRateStore.from_series(fx_series)
+        strategy = _legacy_strategy(self.N, self.ASSETS, weight=1.0, rebal_every=1)
+
+        spec = AccountSpec(
+            account_id="taxable",
+            account_type=LegacyAccountType.TAXABLE,
+            tax_rule=TAXABLE_TAX,
+            contribution_rule=ContributionRule(monthly_amount=self.MONTHLY, priority=0),
+            rebalance_rule=RebalanceRule(mode=LegacyRebalMode.FULL, lot_method="AVGCOST"),
+        )
+        runner = PortfolioRunnerV2(
+            returns=returns, accounts=[spec],
+            prices=prices, fx_store=fx_store,
+        )
+        old_result = runner.run(strategy)
+
+        new_result = run_backtest(
+            BacktestConfig(
+                accounts=[AccountConfig(
+                    account_id="taxable",
+                    account_type=AccountType.TAXABLE,
+                    monthly_contribution=self.MONTHLY,
+                    rebalance_mode=RebalanceMode.FULL,
+                    lot_method="AVGCOST",
+                )],
+                strategy=StrategyConfig(
+                    name="oracle_carry", weights={"SPY": 1.0},
+                    rebalance_every=1,
+                ),
+            ),
+            returns=returns, prices=prices, fx_store=fx_store,
+        )
+        return new_result, old_result
+
+    def test_shadow_match(self):
+        new, old = self._run_both()
+        assert_shadow_match(new, old, fx_enabled=True)
+
+    def test_60_months(self):
+        new, _ = self._run_both()
+        assert new.n_months == 60
