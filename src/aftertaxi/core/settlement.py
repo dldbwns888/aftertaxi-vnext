@@ -64,6 +64,9 @@ def settle_year_end(
             ledger.settle_dividend_tax(fx_rate)
 
     # 4. 건보료 (배당소득 기반, person scope)
+    # ⚠ MVP 한계: person-scope premium을 첫 번째 TAXABLE 계좌에 전액 귀속.
+    #   멀티 TAXABLE 계좌일 때 계좌별 attribution이 왜곡될 수 있음.
+    #   향후: 배당소득 비례 배분 또는 별도 person-level liability 필드.
     if enable_health_insurance:
         hi_result = compute_health_insurance(dividend_income_krw=annual_div_krw)
         if hi_result.premium_krw > 0:
@@ -116,7 +119,7 @@ def settle_final(
         if ledger.isa_exempt_limit > 0:
             ledger.settle_isa()
 
-    # Pass 3: 건보료
+    # Pass 3: 건보료 (person scope → 첫 TAXABLE에 귀속, MVP 한계)
     if enable_health_insurance:
         hi_result = compute_health_insurance(dividend_income_krw=annual_div_krw)
         if hi_result.premium_krw > 0:

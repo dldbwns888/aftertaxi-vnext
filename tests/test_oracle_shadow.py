@@ -343,7 +343,7 @@ class TestOracle3_MultiAccount:
             account_type=LegacyAccountType.ISA,
             tax_rule=ISA_TAX,
             contribution_rule=ContributionRule(
-                monthly_amount=500.0, priority=1, annual_cap=20_000_000.0,
+                monthly_amount=500.0, priority=1,
             ),
             rebalance_rule=RebalanceRule(
                 mode=LegacyRebalMode.CONTRIBUTION_ONLY, lot_method="AVGCOST",
@@ -372,7 +372,6 @@ class TestOracle3_MultiAccount:
                         monthly_contribution=500.0,
                         rebalance_mode=RebalanceMode.CONTRIBUTION_ONLY,
                         lot_method="AVGCOST",
-                        annual_cap=20_000_000.0,
                         tax_config=TaxConfig(
                             capital_gains_rate=0.099,
                             isa_exempt_limit=2_000_000.0,
@@ -583,7 +582,7 @@ class TestOracle6_ISASettlement:
             account_type=LegacyAccountType.ISA,
             tax_rule=ISA_TAX,
             contribution_rule=ContributionRule(
-                monthly_amount=self.MONTHLY, priority=0, annual_cap=20_000_000.0,
+                monthly_amount=self.MONTHLY, priority=0,
             ),
             rebalance_rule=RebalanceRule(mode=LegacyRebalMode.FULL, lot_method="AVGCOST"),
         )
@@ -601,7 +600,6 @@ class TestOracle6_ISASettlement:
                     monthly_contribution=self.MONTHLY,
                     rebalance_mode=RebalanceMode.FULL,
                     lot_method="AVGCOST",
-                    annual_cap=20_000_000.0,
                     tax_config=TaxConfig(
                         capital_gains_rate=0.099,
                         isa_exempt_limit=2_000_000.0,

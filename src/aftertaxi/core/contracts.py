@@ -15,7 +15,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from aftertaxi.core.dividend import DividendSchedule
 
 import numpy as np
 
@@ -32,7 +35,7 @@ class AccountType(str, Enum):
 class RebalanceMode(str, Enum):
     CONTRIBUTION_ONLY = "CONTRIBUTION_ONLY"
     FULL = "FULL"
-    BUDGET = "BUDGET"  # TODO: 미구현. 세금 예산 이내에서만 FULL
+    BUDGET = "BUDGET"  # ⚠ 미구현 → facade에서 예외. 세금 예산 이내에서만 FULL
 
 
 @dataclass(frozen=True)
@@ -51,9 +54,9 @@ class AccountConfig:
     monthly_contribution: float
     rebalance_mode: RebalanceMode = RebalanceMode.CONTRIBUTION_ONLY
     tax_config: TaxConfig = field(default_factory=TaxConfig)
-    annual_cap: Optional[float] = None  # ISA 연간 한도. TODO: runner에서 cap 체크 미구현
-    lot_method: str = "AVGCOST"         # TODO: FIFO/HIFO 미구현, AVGCOST만 지원
-    allowed_assets: Optional[set] = None  # TODO: runner에서 필터링 미구현
+    annual_cap: Optional[float] = None  # ISA 연간 한도. ⚠ 미구현 → facade에서 예외
+    lot_method: Literal["AVGCOST"] = "AVGCOST"  # ⚠ FIFO/HIFO 미구현 → facade에서 예외
+    allowed_assets: Optional[set] = None  # ⚠ 미구현 → facade에서 예외
     transaction_cost_bps: float = 0.0    # 거래비용 (basis points, 매수/매도 각각 적용)
 
 
@@ -72,7 +75,7 @@ class BacktestConfig:
     strategy: StrategyConfig
     n_months: Optional[int] = None  # None이면 데이터 전체
     start_index: int = 0
-    dividend_schedule: Optional[object] = None  # DividendSchedule, None이면 배당 없음
+    dividend_schedule: Optional["DividendSchedule"] = None  # None이면 배당 없음
     enable_health_insurance: bool = False       # True면 건보료 계산 (MVP)
 
 

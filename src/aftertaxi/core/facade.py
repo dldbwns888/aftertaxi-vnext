@@ -33,6 +33,8 @@ def run_backtest(
     fx_store(legacy FxRateStore) 또는 fx_rates(pd.Series)를 받음.
     journal: Optional[EventJournal]. 넘기면 내부에서 이벤트가 기록됨.
     """
+    _validate_config(config)
+
     if prices is None:
         prices = _returns_to_prices(returns)
 
@@ -43,6 +45,37 @@ def run_backtest(
         raise ValueError("fx_rates 또는 fx_store를 제공해야 합니다.")
 
     return run_engine(config, prices, fx_rates, journal=journal)
+
+
+def _validate_config(config: BacktestConfig) -> None:
+    """미구현 설정이 활성화되면 예외.
+
+    계약에 존재하지만 엔진이 무시하는 필드가 설정되면
+    사용자가 "동작한다"고 착각하는 것을 방지.
+    """
+    from aftertaxi.core.contracts import RebalanceMode
+
+    for acct in config.accounts:
+        if acct.annual_cap is not None:
+            raise NotImplementedError(
+                f"계좌 '{acct.account_id}': annual_cap은 아직 미구현. "
+                "ISA 연간 납입 한도 체크는 향후 추가 예정."
+            )
+        if acct.allowed_assets is not None:
+            raise NotImplementedError(
+                f"계좌 '{acct.account_id}': allowed_assets는 아직 미구현. "
+                "계좌별 허용 자산 필터링은 향후 추가 예정."
+            )
+        if acct.rebalance_mode == RebalanceMode.BUDGET:
+            raise NotImplementedError(
+                f"계좌 '{acct.account_id}': BUDGET 리밸런스 모드는 아직 미구현. "
+                "CONTRIBUTION_ONLY 또는 FULL을 사용하세요."
+            )
+        if acct.lot_method != "AVGCOST":
+            raise NotImplementedError(
+                f"계좌 '{acct.account_id}': lot_method='{acct.lot_method}'는 미구현. "
+                "현재 AVGCOST만 지원."
+            )
 
 
 def _returns_to_prices(returns: pd.DataFrame, base: float = 100.0) -> pd.DataFrame:
