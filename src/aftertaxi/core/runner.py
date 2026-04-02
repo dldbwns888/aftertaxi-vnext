@@ -48,7 +48,6 @@ def run_engine(
     fx_rates : Series, index=datetime, values=USDKRW rate
     journal : Optional[EventJournal], 이벤트 로그 (None이면 기록 안 함)
     """
-    returns = prices.pct_change().fillna(0.0)
     index = prices.index
     n = config.n_months if config.n_months else len(index) - config.start_index
     start = config.start_index

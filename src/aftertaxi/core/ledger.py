@@ -91,8 +91,6 @@ class AccountLedger:
         self._capital_gains_tax_assessed_krw: float = 0.0
         self._dividend_tax_assessed_krw: float = 0.0
         self._health_insurance_assessed_krw: float = 0.0
-        # 건보료 계산용 (settle_annual_tax가 저장, settlement가 소비)
-        self._last_annual_taxable_income_krw: float = 0.0
 
         # ── 거래비용 (attribution용) ──
         self.total_transaction_cost_usd: float = 0.0
@@ -300,8 +298,6 @@ class AccountLedger:
         )
         self.annual_realized_gain_krw = 0.0
         self.annual_realized_loss_krw = 0.0
-        # 건보료 계산용: 올해 양도차익 (이월결손금 상쇄 후, 공제 전)
-        self._last_annual_taxable_income_krw = result.net_gain_before_exemption
         # NOTE: annual_dividend_*는 settle_dividend_tax()에서 리셋 (순서 의존)
 
         self._log("tax_assessed", amount_krw=result.tax_krw,
