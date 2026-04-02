@@ -142,6 +142,77 @@ def load_fx_rates(
 
 
 # ══════════════════════════════════════════════
+# 배당 이력 로더
+# ══════════════════════════════════════════════
+
+def load_dividends(
+    tickers: List[str],
+    start: str = "2006-01-01",
+    end: Optional[str] = None,
+    cache_dir: Optional[Path] = None,
+) -> pd.DataFrame:
+    """ETF 배당 이력 (일별 → 월별 합산).
+
+    yfinance의 actions에서 Dividends를 추출.
+    split-adjusted per-share 기준.
+
+    Returns
+    -------
+    DataFrame: index=DatetimeIndex(month-end), columns=tickers, values=월간 배당 합계 (USD/share)
+    """
+    cache_dir = cache_dir or _DEFAULT_CACHE_DIR
+    cache_file = cache_dir / f"dividends_{'_'.join(sorted(tickers))}_{start}.parquet"
+
+    if cache_file.exists():
+        df = pd.read_parquet(cache_file)
+        if all(t in df.columns for t in tickers):
+            df = df[tickers]
+            if end:
+                df = df.loc[:end]
+            return df
+
+    try:
+        import yfinance as yf
+    except ImportError:
+        raise ImportError("yfinance가 필요합니다: pip install yfinance")
+
+    div_frames = {}
+    for ticker in tickers:
+        tk = yf.Ticker(ticker)
+        divs = tk.dividends
+        if divs is not None and len(divs) > 0:
+            # timezone 제거
+            if divs.index.tz is not None:
+                divs.index = divs.index.tz_localize(None)
+            # start/end 필터
+            if start:
+                divs = divs.loc[start:]
+            if end:
+                divs = divs.loc[:end]
+            # 월별 합산
+            monthly = divs.resample("ME").sum()
+            div_frames[ticker] = monthly
+        else:
+            div_frames[ticker] = pd.Series(dtype=float)
+
+    # 모든 티커를 하나의 DataFrame으로
+    if div_frames:
+        df = pd.DataFrame(div_frames)
+        df = df.fillna(0.0)
+    else:
+        df = pd.DataFrame()
+
+    # 캐시 저장
+    if len(df) > 0:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(cache_file)
+
+    if end and len(df) > 0:
+        df = df.loc[:end]
+    return df
+
+
+# ══════════════════════════════════════════════
 # Lane A 통합 로더
 # ══════════════════════════════════════════════
 
@@ -151,25 +222,22 @@ def load_lane_a(
     end: Optional[str] = None,
     cache_dir: Optional[Path] = None,
 ) -> dict:
-    """Lane A 데이터 일괄 로드.
+    """Lane A 데이터 일괄 로드 (ADJUSTED 모드, 기존 호환).
 
     Returns
     -------
     dict with:
-      prices: DataFrame (monthly, USD)
+      prices: DataFrame (monthly adjusted close, USD)
       fx_rates: Series (monthly, USDKRW)
-      returns: DataFrame (monthly returns)
-      start_date: Timestamp
-      end_date: Timestamp
+      returns: DataFrame (monthly returns, 배당 포함)
+      start_date, end_date, n_months
     """
     prices = load_prices(tickers, start=start, end=end, cache_dir=cache_dir)
     fx_rates = load_fx_rates(start=start, end=end, cache_dir=cache_dir)
 
-    # 공통 인덱스 정렬
     common_idx = prices.index.intersection(fx_rates.index)
     prices = prices.loc[common_idx]
     fx_rates = fx_rates.loc[common_idx]
-
     returns = prices.pct_change().fillna(0.0)
 
     return {
@@ -180,3 +248,63 @@ def load_lane_a(
         "end_date": common_idx[-1],
         "n_months": len(common_idx),
     }
+
+
+def load_lane_a_explicit(
+    tickers: List[str],
+    start: str = "2006-06-01",
+    end: Optional[str] = None,
+    cache_dir: Optional[Path] = None,
+    withholding_rate: float = 0.15,
+    reinvest: bool = True,
+):
+    """Lane A 데이터 일괄 로드 (EXPLICIT_DIVIDENDS 모드).
+
+    가격은 split-adjusted close (배당 미반영).
+    배당은 별도 DividendSchedule로 반환.
+
+    Returns
+    -------
+    LaneAData with price_mode=EXPLICIT_DIVIDENDS
+
+    Note
+    ----
+    yfinance Close 컬럼은 최근 버전(2.x)에서 split-adjusted,
+    배당 미반영. 이전 버전에서는 adjusted close일 수 있으므로
+    버전 확인 필요.
+    """
+    from aftertaxi.lanes.lane_a.data_contract import (
+        PriceMode, LaneAData, build_dividend_schedule_from_history,
+    )
+
+    prices = load_prices(tickers, start=start, end=end, cache_dir=cache_dir)
+    fx_rates = load_fx_rates(start=start, end=end, cache_dir=cache_dir)
+    dividends = load_dividends(tickers, start=start, end=end, cache_dir=cache_dir)
+
+    # 공통 인덱스 정렬
+    common_idx = prices.index.intersection(fx_rates.index)
+    prices = prices.loc[common_idx]
+    fx_rates = fx_rates.loc[common_idx]
+    returns = prices.pct_change().fillna(0.0)
+
+    # 배당 이력 → DividendSchedule
+    div_schedule = build_dividend_schedule_from_history(
+        dividends, prices,
+        withholding_rate=withholding_rate,
+        reinvest=reinvest,
+    )
+
+    data = LaneAData(
+        prices=prices,
+        fx_rates=fx_rates,
+        returns=returns,
+        price_mode=PriceMode.EXPLICIT_DIVIDENDS,
+        start_date=common_idx[0],
+        end_date=common_idx[-1],
+        n_months=len(common_idx),
+        dividend_schedule=div_schedule,
+        dividend_events_raw=dividends,
+    )
+
+    data.validate()
+    return data
