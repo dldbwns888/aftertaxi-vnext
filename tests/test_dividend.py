@@ -130,7 +130,9 @@ class TestLedgerDividend:
         assert abs(divs[0].metadata["withholding_usd"] - 1.5) < 0.01
 
     def test_annual_dividend_resets_on_settle(self):
-        """연말 정산 시 annual 배당 카운터 리셋, cumulative는 유지."""
+        """settle_dividend_tax()가 annual 배당 카운터 리셋, cumulative는 유지.
+        NOTE: settle_annual_tax()는 배당 카운터를 안 건드림 (순서 의존).
+        """
         ledger = AccountLedger("t", tax_rate=0.22, annual_exemption=0)
         ledger.cash_usd = 100000
         ledger.buy("SPY", 100, 100, 1300)
@@ -139,14 +141,17 @@ class TestLedgerDividend:
         ledger.apply_dividend("SPY", 1.0, 0.15, 1300, reinvest=False)
         ledger.apply_dividend("SPY", 1.0, 0.15, 1300, reinvest=False)
         assert abs(ledger.annual_dividend_gross_usd - 200) < 0.01
-        assert abs(ledger.cumulative_dividend_gross_usd - 200) < 0.01
 
-        # 연말 정산
+        # settle_annual_tax → 배당 카운터 안 건드림
         ledger.settle_annual_tax(current_year=2023)
+        assert abs(ledger.annual_dividend_gross_usd - 200) < 0.01  # 아직 살아있음
 
-        # annual 리셋, cumulative 유지
+        # settle_dividend_tax → 배당 카운터 리셋
+        ledger.settle_dividend_tax(fx_rate=1300)
         assert ledger.annual_dividend_gross_usd == 0.0
         assert ledger.annual_dividend_withholding_usd == 0.0
+
+        # cumulative는 유지
         assert abs(ledger.cumulative_dividend_gross_usd - 200) < 0.01
         assert abs(ledger.cumulative_dividend_withholding_usd - 30) < 0.01
 
@@ -224,3 +229,29 @@ class TestDividendIntegration:
             returns=returns, prices=prices, fx_rates=fx,
         )
         assert r.gross_pv_usd > 0
+
+    def test_dividend_tax_event_recorded(self):
+        """배당세 정산 이벤트가 journal에 기록된다."""
+        idx = pd.date_range("2020-01-31", periods=36, freq="ME")
+        prices = pd.DataFrame({"SPY": [400] * 36}, index=idx)
+        fx = pd.Series(1300.0, index=idx)
+        returns = prices.pct_change().fillna(0.0)
+        journal = EventJournal()
+
+        result = run_backtest(
+            BacktestConfig(
+                accounts=[AccountConfig("t", AccountType.TAXABLE, 1000.0)],
+                strategy=StrategyConfig("test", {"SPY": 1.0}),
+                dividend_schedule=DividendSchedule({"SPY": 0.02}),
+            ),
+            returns=returns, prices=prices, fx_rates=fx,
+            journal=journal,
+        )
+
+        # 3년 → 연도 전환 2번 + 최종 청산 = 최소 2번 dividend_tax 이벤트
+        div_tax_events = journal.filter_by_type("dividend_tax")
+        assert len(div_tax_events) >= 1
+        # 배당이 적으면 (2천만 이하) 종합과세 미해당 → additional = 0
+        # 하지만 이벤트 자체는 기록됨
+        for e in div_tax_events:
+            assert "is_comprehensive" in e.metadata

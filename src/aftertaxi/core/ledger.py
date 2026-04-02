@@ -293,8 +293,7 @@ class AccountLedger:
         )
         self.annual_realized_gain_krw = 0.0
         self.annual_realized_loss_krw = 0.0
-        self.annual_dividend_gross_usd = 0.0
-        self.annual_dividend_withholding_usd = 0.0
+        # NOTE: annual_dividend_*는 settle_dividend_tax()에서 리셋 (순서 의존)
 
         self._log("tax_assessed", amount_krw=result.tax_krw,
                   metadata={"taxable_base": result.taxable_base_krw,
@@ -325,6 +324,42 @@ class AccountLedger:
                             "exempt": result.exempt_amount_krw,
                             "excess": result.excess_amount_krw})
         return result.tax_krw
+
+    # ── 배당소득세 정산 ──
+
+    def settle_dividend_tax(self, fx_rate: float) -> float:
+        """연간 배당소득세 정산. tax_engine에 위임 → 결과 적용.
+
+        종합과세 기준(2천만원) 미만: 해외 원천징수로 종결, 추가 세금 0.
+        종합과세 초과: 국내 세율 적용 − 외국납부세액공제 = 추가 세금.
+        """
+        if self.annual_dividend_gross_usd < 1e-8:
+            return 0.0
+
+        from aftertaxi.core.tax_engine import compute_dividend_tax
+
+        result = compute_dividend_tax(
+            annual_dividend_gross_usd=self.annual_dividend_gross_usd,
+            annual_withholding_usd=self.annual_dividend_withholding_usd,
+            fx_rate=fx_rate,
+        )
+
+        # 추가 세금만 부과 (원천징수는 이미 차감됨)
+        if result.additional_tax_krw > 0:
+            self._total_tax_assessed_krw += result.additional_tax_krw
+            self.unpaid_tax_liability_krw += result.additional_tax_krw
+
+        self._log("dividend_tax", amount_krw=result.additional_tax_krw,
+                  metadata={"gross_krw": result.annual_dividend_gross_krw,
+                            "withholding_krw": result.annual_withholding_krw,
+                            "is_comprehensive": result.is_comprehensive,
+                            "foreign_credit": result.foreign_tax_credit_krw})
+
+        # 연간 배당 카운터 리셋 (이 함수가 소유)
+        self.annual_dividend_gross_usd = 0.0
+        self.annual_dividend_withholding_usd = 0.0
+
+        return result.additional_tax_krw
 
     # ── 세금 납부 (KRW → USD 차감) ──
 

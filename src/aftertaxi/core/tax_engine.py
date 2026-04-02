@@ -145,3 +145,80 @@ def compute_isa_settlement(
         exempt_amount_krw=exempt,
         excess_amount_krw=excess,
     )
+
+
+# ══════════════════════════════════════════════
+# 배당소득세 (금융소득 기초)
+# ══════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class DividendTaxResult:
+    """배당소득세 계산 결과.
+
+    한국 해외 ETF 배당 과세 구조:
+      - 해외 원천징수 15% (지급 시점에 이미 차감됨)
+      - 국내 금융소득 2천만원 이하: 원천징수로 종결 (분리과세)
+      - 2천만원 초과: 종합과세 대상 (추가 세금 발생 가능)
+      - 외국납부세액공제: 해외에서 낸 세금을 국내 세금에서 공제
+    """
+    annual_dividend_gross_krw: float     # 연간 배당 총액 (KRW 환산)
+    annual_withholding_krw: float        # 연간 해외 원천징수액 (KRW 환산)
+    is_comprehensive: bool               # 종합과세 대상 여부
+    foreign_tax_credit_krw: float        # 외국납부세액공제 가능 금액
+    additional_tax_krw: float            # 추가 납부 세금 (종합과세 시)
+    # 종합과세 미만이면 additional_tax = 0 (원천징수로 종결)
+
+
+def compute_dividend_tax(
+    annual_dividend_gross_usd: float,
+    annual_withholding_usd: float,
+    fx_rate: float,
+    comprehensive_threshold_krw: float = 20_000_000.0,
+    domestic_dividend_rate: float = 0.154,  # 배당소득 원천징수율 15.4%
+) -> DividendTaxResult:
+    """배당소득세 계산. 순수 함수.
+
+    Parameters
+    ----------
+    annual_dividend_gross_usd : 연간 배당 총액 (USD)
+    annual_withholding_usd : 연간 해외 원천징수액 (USD)
+    fx_rate : 환산 환율
+    comprehensive_threshold_krw : 금융소득 종합과세 기준 (2천만원)
+    domestic_dividend_rate : 국내 배당소득 원천징수율
+
+    Returns
+    -------
+    DividendTaxResult
+
+    Note
+    ----
+    종합과세 시 실제 세율은 다른 소득에 따라 달라진다.
+    MVP에서는 domestic_dividend_rate를 기본 세율로 사용.
+    """
+    gross_krw = annual_dividend_gross_usd * fx_rate
+    withholding_krw = annual_withholding_usd * fx_rate
+
+    is_comprehensive = gross_krw > comprehensive_threshold_krw
+
+    if not is_comprehensive:
+        # 분리과세: 해외 원천징수로 종결. 추가 세금 없음.
+        return DividendTaxResult(
+            annual_dividend_gross_krw=gross_krw,
+            annual_withholding_krw=withholding_krw,
+            is_comprehensive=False,
+            foreign_tax_credit_krw=0.0,
+            additional_tax_krw=0.0,
+        )
+
+    # 종합과세: 국내 세율 적용 후 외국납부세액공제
+    domestic_tax = gross_krw * domestic_dividend_rate
+    credit = min(withholding_krw, domestic_tax)  # 공제는 국내 세액 한도
+    additional = max(0.0, domestic_tax - credit)
+
+    return DividendTaxResult(
+        annual_dividend_gross_krw=gross_krw,
+        annual_withholding_krw=withholding_krw,
+        is_comprehensive=True,
+        foreign_tax_credit_krw=credit,
+        additional_tax_krw=additional,
+    )

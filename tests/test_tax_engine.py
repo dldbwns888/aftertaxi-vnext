@@ -148,3 +148,63 @@ class TestISASettlement:
         r = compute_isa_settlement(3_000_000, 2_000_000)
         assert r.tax_krw == 0.0
         assert abs(r.net_gain_krw - 1_000_000) < 1.0
+
+
+# ══════════════════════════════════════════════
+# 배당소득세
+# ══════════════════════════════════════════════
+
+class TestDividendTax:
+
+    def test_below_threshold_no_additional(self):
+        """금융소득 2천만원 이하 → 분리과세, 추가 세금 0."""
+        from aftertaxi.core.tax_engine import compute_dividend_tax
+        r = compute_dividend_tax(
+            annual_dividend_gross_usd=10_000,  # $10k × 1300 = 1300만
+            annual_withholding_usd=1_500,
+            fx_rate=1300,
+        )
+        assert not r.is_comprehensive
+        assert r.additional_tax_krw == 0.0
+        assert abs(r.annual_dividend_gross_krw - 13_000_000) < 1.0
+
+    def test_above_threshold_comprehensive(self):
+        """금융소득 2천만원 초과 → 종합과세, 추가 세금 발생."""
+        from aftertaxi.core.tax_engine import compute_dividend_tax
+        r = compute_dividend_tax(
+            annual_dividend_gross_usd=20_000,  # $20k × 1300 = 2600만 > 2000만
+            annual_withholding_usd=3_000,
+            fx_rate=1300,
+        )
+        assert r.is_comprehensive
+        # domestic_tax = 26M × 0.154 = 4,004,000
+        # credit = min(3.9M withholding, 4,004,000) = 3,900,000
+        # additional = 4,004,000 - 3,900,000 = 104,000
+        assert r.additional_tax_krw > 0
+        assert r.foreign_tax_credit_krw > 0
+
+    def test_withholding_fully_covers(self):
+        """해외 원천징수가 국내 세율보다 높으면 추가 세금 0."""
+        from aftertaxi.core.tax_engine import compute_dividend_tax
+        r = compute_dividend_tax(
+            annual_dividend_gross_usd=20_000,
+            annual_withholding_usd=5_000,  # 25% 원천징수 > 15.4% 국내
+            fx_rate=1300,
+        )
+        assert r.is_comprehensive
+        assert r.additional_tax_krw == 0.0  # credit이 domestic_tax를 다 커버
+
+    def test_zero_dividend(self):
+        """배당 0이면 모든 값 0."""
+        from aftertaxi.core.tax_engine import compute_dividend_tax
+        r = compute_dividend_tax(0, 0, 1300)
+        assert not r.is_comprehensive
+        assert r.additional_tax_krw == 0.0
+        assert r.annual_dividend_gross_krw == 0.0
+
+    def test_fx_rate_applied(self):
+        """환율이 결과에 반영."""
+        from aftertaxi.core.tax_engine import compute_dividend_tax
+        r1 = compute_dividend_tax(10_000, 1_500, fx_rate=1300)
+        r2 = compute_dividend_tax(10_000, 1_500, fx_rate=1400)
+        assert r2.annual_dividend_gross_krw > r1.annual_dividend_gross_krw

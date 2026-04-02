@@ -35,15 +35,17 @@ def settle_year_end(
 
     순서:
       1. 양도소득세 정산 (연간 실현손익 → 세금 계산)
-      2. 세금 납부 (KRW → USD cash 차감)
+      2. 배당소득세 정산 (연간 배당 → 종합과세 판정)
+      3. 세금 납부 (KRW → USD cash 차감)
 
     향후 추가될 것:
-      - 배당소득 정산
       - 건보료 (person-level로 승격 예정)
-      - 외국납부세액공제
     """
     for ledger in ledgers.values():
         ledger.settle_annual_tax(current_year=year)
+        # 배당세: TAXABLE만 (ISA는 운용 중 비과세)
+        if ledger.account_type == "TAXABLE":
+            ledger.settle_dividend_tax(fx_rate)
         ledger.pay_tax(fx_rate)
 
 
@@ -74,10 +76,13 @@ def settle_final(
         ledger.liquidate(price_map, fx_rate)
         # 2. 양도소득세 정산
         ledger.settle_annual_tax(current_year=year)
-        # 3. ISA 만기 정산
+        # 3. 배당소득세 정산 (TAXABLE만)
+        if ledger.account_type == "TAXABLE":
+            ledger.settle_dividend_tax(fx_rate)
+        # 4. ISA 만기 정산
         if ledger.isa_exempt_limit > 0:
             ledger.settle_isa()
-        # 4. 세금 납부
+        # 5. 세금 납부
         ledger.pay_tax(fx_rate)
-        # 5. 최종 PV 기록
+        # 6. 최종 PV 기록
         ledger.record_month(replace_last=True)
