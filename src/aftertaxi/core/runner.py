@@ -62,6 +62,7 @@ def run_engine(
         )
 
     target_weights = config.strategy.weights
+    rebal_every = config.strategy.rebalance_every
 
     # ── 월 루프 ──
     current_year = index[start].year if start < len(index) else None
@@ -86,24 +87,17 @@ def run_engine(
                 ledger.pay_tax(fx_rate)
             current_year = dt.year
 
-        # 3~4. 입금 + C/O 매수
+        # 3~4. 입금 + 리밸런싱/매수
+        should_rebal = (step % rebal_every == 0)
+
         for ac in config.accounts:
             ledger = ledgers[ac.account_id]
             ledger.deposit(ac.monthly_contribution)
 
-            # C/O: 현금을 target weights 비례로 매수
-            available_cash = ledger.cash_usd
-            if available_cash > 1e-8:
-                for asset, weight in target_weights.items():
-                    if weight <= 0 or asset not in price_map:
-                        continue
-                    px = price_map[asset]
-                    if px <= 0:
-                        continue
-                    buy_usd = available_cash * weight
-                    buy_qty = buy_usd / px
-                    if buy_qty > 1e-12:
-                        ledger.buy(asset, buy_qty, px, fx_rate)
+            if ac.rebalance_mode == RebalanceMode.FULL and should_rebal:
+                _execute_full_rebalance(ledger, target_weights, price_map, fx_rate)
+            else:
+                _execute_contribution_only(ledger, target_weights, price_map, fx_rate)
 
         # 5. 월말 기록
         for ledger in ledgers.values():
@@ -205,3 +199,91 @@ def _aggregate(ledgers: Dict[str, AccountLedger], reporting_fx: float) -> Engine
         accounts=account_summaries,
         monthly_values=combined_monthly if combined_monthly is not None else np.array([]),
     )
+
+
+# ══════════════════════════════════════════════
+# 실행 정책
+# ══════════════════════════════════════════════
+
+DUST_PCT = 0.001  # 포트폴리오 대비 0.1% 미만 거래 무시
+
+
+def _execute_contribution_only(
+    ledger: AccountLedger,
+    target_weights: Dict[str, float],
+    price_map: Dict[str, float],
+    fx_rate: float,
+) -> None:
+    """C/O: 새 돈만 target weights 비례로 매수. 매도 없음."""
+    cash = ledger.cash_usd
+    if cash <= 1.0:
+        return
+
+    tw_sum = sum(target_weights.values())
+    if tw_sum <= 0:
+        return
+
+    min_alloc = max(1.0, cash * DUST_PCT)
+    for asset, tw in target_weights.items():
+        alloc = cash * (tw / tw_sum)
+        if alloc <= min_alloc:
+            continue
+        px = price_map.get(asset, 0.0)
+        if px <= 0:
+            continue
+        buy_qty = alloc / px
+        if buy_qty > 1e-12:
+            ledger.buy(asset, buy_qty, px, fx_rate)
+
+
+def _execute_full_rebalance(
+    ledger: AccountLedger,
+    target_weights: Dict[str, float],
+    price_map: Dict[str, float],
+    fx_rate: float,
+) -> None:
+    """FULL: 목표비중으로 매도 먼저 → 매수."""
+    total_value = ledger.total_value_usd()
+    if total_value <= 0:
+        return
+
+    # 현재 시가
+    current_mv: Dict[str, float] = {}
+    for asset, pos in ledger.positions.items():
+        if pos.qty > 1e-12:
+            px = price_map.get(asset, 0.0)
+            current_mv[asset] = pos.qty * px
+
+    # 목표 시가
+    desired: Dict[str, float] = {a: total_value * w for a, w in target_weights.items()}
+
+    # delta 계산
+    all_assets = set(list(current_mv.keys()) + list(desired.keys()))
+    deltas = {a: desired.get(a, 0.0) - current_mv.get(a, 0.0) for a in all_assets}
+
+    # 1. 매도 먼저 (현금 확보)
+    min_trade = max(1.0, total_value * DUST_PCT)
+    for asset, delta in deltas.items():
+        if delta < -min_trade:
+            px = price_map.get(asset, 0.0)
+            if px <= 0:
+                continue
+            pos = ledger.positions.get(asset)
+            if pos is None or pos.qty < 1e-12:
+                continue
+            sell_qty = min(abs(delta) / px, pos.qty)
+            if sell_qty > 1e-12:
+                ledger.sell(asset, sell_qty, px, fx_rate)
+
+    # 2. 매수 (available cash 범위 내)
+    for asset, delta in deltas.items():
+        if delta > min_trade:
+            px = price_map.get(asset, 0.0)
+            if px <= 0:
+                continue
+            buy_amount = min(delta, ledger.cash_usd)
+            if buy_amount <= min_trade:
+                continue
+            buy_qty = buy_amount / px
+            if buy_qty > 1e-12:
+                ledger.buy(asset, buy_qty, px, fx_rate)

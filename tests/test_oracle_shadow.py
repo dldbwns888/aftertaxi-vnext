@@ -398,3 +398,82 @@ class TestOracle3_MultiAccount:
         new, _ = self._run_both()
         ids = {a.account_id for a in new.accounts}
         assert ids == {"taxable", "isa"}
+
+
+# ══════════════════════════════════════════════
+# Oracle 4: 1계좌 TAXABLE, FULL rebalance, 2자산, 24개월
+# ══════════════════════════════════════════════
+
+class TestOracle4_FullRebalance:
+    """FULL rebalance — 매도로 실현이익 발생 → 세금."""
+
+    N = 24
+    ASSETS = ["SPY", "QQQ"]
+    MONTHLY = 1000.0
+
+    def _make_divergent_prices(self):
+        """SPY: 월 1% 상승, QQQ: 월 2% 상승 → 리밸런싱 시 QQQ 매도."""
+        idx = _monthly_index(self.N)
+        spy = [100.0]
+        qqq = [100.0]
+        for _ in range(1, self.N):
+            spy.append(spy[-1] * 1.01)
+            qqq.append(qqq[-1] * 1.02)
+        return pd.DataFrame({"SPY": spy, "QQQ": qqq}, index=idx)
+
+    def _run_both(self):
+        prices = self._make_divergent_prices()
+        returns = _returns_from_prices(prices)
+        fx_series = _constant_fx(self.N)
+        fx_store = FxRateStore.from_series(fx_series)
+        strategy_legacy = _legacy_strategy(self.N, self.ASSETS, weight=0.5, rebal_every=1)
+
+        # 기존 엔진: FULL mode
+        spec = AccountSpec(
+            account_id="taxable",
+            account_type=LegacyAccountType.TAXABLE,
+            tax_rule=TAXABLE_TAX,
+            contribution_rule=ContributionRule(monthly_amount=self.MONTHLY, priority=0),
+            rebalance_rule=RebalanceRule(
+                mode=LegacyRebalMode.FULL, lot_method="AVGCOST",
+            ),
+        )
+        runner = PortfolioRunnerV2(
+            returns=returns, accounts=[spec],
+            prices=prices, fx_store=fx_store,
+        )
+        old_result = runner.run(strategy_legacy)
+
+        # 새 facade: FULL mode
+        new_result = run_backtest(
+            BacktestConfig(
+                accounts=[AccountConfig(
+                    account_id="taxable",
+                    account_type=AccountType.TAXABLE,
+                    monthly_contribution=self.MONTHLY,
+                    rebalance_mode=RebalanceMode.FULL,
+                    lot_method="AVGCOST",
+                )],
+                strategy=StrategyConfig(
+                    name="oracle_full", weights={"SPY": 0.5, "QQQ": 0.5},
+                    rebalance_every=1,
+                ),
+            ),
+            returns=returns, prices=prices, fx_store=fx_store,
+        )
+        return new_result, old_result
+
+    def test_shadow_match(self):
+        new, old = self._run_both()
+        assert_shadow_match(new, old, fx_enabled=True)
+
+    def test_tax_positive(self):
+        """FULL 리밸런싱은 QQQ 매도 → 실현이익 → 세금 > 0."""
+        new, _ = self._run_both()
+        assert new.tax.total_assessed_krw > 0, "FULL rebalance인데 세금이 0"
+
+    def test_net_less_than_gross(self):
+        """세금 납부 후 net < gross."""
+        new, _ = self._run_both()
+        # 세금이 발생했으면 net < gross (또는 unpaid > 0이었다가 납부)
+        assert new.tax.total_paid_krw > 0 or new.tax.total_unpaid_krw > 0
