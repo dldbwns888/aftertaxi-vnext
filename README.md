@@ -117,4 +117,4 @@ PYTHONPATH=/path/to/aftertaxi:src python -m pytest tests/ -q
 python -m pytest tests/test_contracts.py tests/test_unsupported_config.py -v
 ```
 
-292 tests, ~50초.
+304 tests, ~49초.
