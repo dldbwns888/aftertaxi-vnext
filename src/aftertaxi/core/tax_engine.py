@@ -42,6 +42,54 @@ class ISASettlementResult:
 # 순수 함수
 # ══════════════════════════════════════════════
 
+def _compute_progressive_tax(
+    taxable_krw: float,
+    brackets: tuple,
+    threshold: float,
+    flat_rate: float,
+) -> float:
+    """종합과세 누진 세금 계산.
+
+    threshold 이하: flat_rate 적용
+    threshold 초과: 누진 bracket 적용 (초과분만)
+
+    bracket은 누적 소득 구간 기준:
+      - (14M, 0.066) → 소득 0~14M에 6.6% 적용
+      - (50M, 0.165) → 소득 14M~50M에 16.5% 적용
+      - ...
+    threshold=20M이면 20M까지 flat, 20M 이상 구간부터 누진.
+
+    Parameters
+    ----------
+    taxable_krw : 과세표준 (공제 후)
+    brackets : ((구간상한, 세율), ...) — 오름차순
+    threshold : 누진 적용 기준선
+    flat_rate : 기준선 이하 적용 세율
+    """
+    if taxable_krw <= 0:
+        return 0.0
+    if taxable_krw <= threshold:
+        return taxable_krw * flat_rate
+
+    # threshold 이하: flat rate
+    tax = threshold * flat_rate
+
+    # threshold 초과: bracket별 누진
+    cumulated = 0.0
+    for upper, rate in brackets:
+        if cumulated >= taxable_krw:
+            break
+
+        effective_bottom = max(cumulated, threshold)
+        effective_top = min(upper, taxable_krw)
+
+        if effective_top > effective_bottom:
+            tax += (effective_top - effective_bottom) * rate
+
+        cumulated = upper
+
+    return tax
+
 def compute_capital_gains_tax(
     realized_gain_krw: float,
     realized_loss_krw: float,
@@ -50,6 +98,8 @@ def compute_capital_gains_tax(
     rate: float = 0.22,
     exemption: float = 2_500_000.0,
     carry_expiry_years: int = 5,
+    progressive_brackets: tuple = None,
+    progressive_threshold: float = 20_000_000.0,
 ) -> CapitalGainsTaxResult:
     """양도소득세 계산. 순수 함수 — 상태 변경 없음.
 
@@ -106,7 +156,13 @@ def compute_capital_gains_tax(
     # 3. 공제 적용
     exemption_used = min(net_after_carry, exemption)
     taxable = max(0.0, net_after_carry - exemption)
-    tax_krw = taxable * rate
+
+    # 4. 세금 계산 (flat 또는 progressive)
+    if progressive_brackets and taxable > progressive_threshold:
+        tax_krw = _compute_progressive_tax(taxable, progressive_brackets,
+                                            progressive_threshold, rate)
+    else:
+        tax_krw = taxable * rate
 
     return CapitalGainsTaxResult(
         tax_krw=tax_krw,

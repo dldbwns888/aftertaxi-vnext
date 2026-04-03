@@ -57,15 +57,18 @@ def run_engine(
     # ── 계좌 생성 ──
     ledgers: Dict[str, AccountLedger] = {}
     for ac in config.accounts:
+        is_taxable = ac.account_type == AccountType.TAXABLE
         ledgers[ac.account_id] = AccountLedger(
             account_id=ac.account_id,
             account_type=ac.account_type.value,
-            tax_rate=ac.tax_config.capital_gains_rate if ac.account_type == AccountType.TAXABLE else 0.0,
-            annual_exemption=ac.tax_config.annual_exemption if ac.account_type == AccountType.TAXABLE else 0.0,
+            tax_rate=ac.tax_config.capital_gains_rate if is_taxable else 0.0,
+            annual_exemption=ac.tax_config.annual_exemption if is_taxable else 0.0,
             isa_exempt_limit=ac.tax_config.isa_exempt_limit if ac.account_type == AccountType.ISA else 0.0,
             isa_excess_rate=ac.tax_config.capital_gains_rate if ac.account_type == AccountType.ISA else 0.0,
             transaction_cost_bps=ac.transaction_cost_bps,
             journal=journal,
+            progressive_brackets=ac.tax_config.progressive_brackets if is_taxable else None,
+            progressive_threshold=ac.tax_config.progressive_threshold if is_taxable else 20_000_000.0,
         )
 
     target_weights = config.strategy.weights

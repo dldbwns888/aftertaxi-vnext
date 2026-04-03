@@ -65,6 +65,8 @@ class AccountLedger:
         isa_excess_rate: float = 0.099,
         transaction_cost_bps: float = 0.0,
         journal=None,
+        progressive_brackets: tuple = None,
+        progressive_threshold: float = 20_000_000.0,
     ):
         self.account_id = account_id
         self.account_type = account_type
@@ -74,6 +76,8 @@ class AccountLedger:
         self.isa_excess_rate = isa_excess_rate
         self.transaction_cost_bps = transaction_cost_bps
         self._journal = journal  # Optional[EventJournal], None이면 기록 안 함
+        self.progressive_brackets = progressive_brackets
+        self.progressive_threshold = progressive_threshold
 
         # ── 잔고 ──
         self.cash_usd: float = 0.0
@@ -293,6 +297,8 @@ class AccountLedger:
             current_year=current_year,
             rate=self.tax_rate,
             exemption=self.annual_exemption,
+            progressive_brackets=self.progressive_brackets,
+            progressive_threshold=self.progressive_threshold,
         )
 
         # 상태 갱신 (결과 적용만)
