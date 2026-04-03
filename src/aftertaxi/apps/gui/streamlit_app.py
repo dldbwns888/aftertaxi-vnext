@@ -166,6 +166,11 @@ def _render_comparison(r1, r2, l1, l2):
     st.markdown("---")
     st.markdown(interpret_comparison(r1, r2, l1, l2))
 
+    # 해석 (#10)
+    from aftertaxi.workbench.interpret import interpret_comparison
+    st.markdown("---")
+    st.markdown(interpret_comparison(r1, r2, l1, l2))
+
 
 # ══════════════════════════════════════════════
 # 메인
@@ -240,6 +245,11 @@ def main():
         for e in errors:
             st.error(e)
         return
+
+    # 경고 (#9)
+    warnings = draft1.warn()
+    for w in warnings:
+        st.warning(w)
 
     # 불러오기
     if uploaded:

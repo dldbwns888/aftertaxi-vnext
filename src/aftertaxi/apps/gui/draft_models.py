@@ -125,6 +125,48 @@ class BacktestDraft:
             errors.append("기간은 1개월 이상이어야 합니다")
         return errors
 
+    def warn(self) -> List[str]:
+        """도메인 상식 기반 경고. (#9)
+
+        에러는 아니지만 의도치 않은 설정을 감지.
+        """
+        warnings = []
+
+        # ISA 한도 경고
+        for i, acct in enumerate(self.accounts):
+            if acct.type.upper() == "ISA" and acct.monthly:
+                annual = acct.monthly * 12
+                if annual > 2000:  # USD 기준 ~2400만원/yr ≈ $1850
+                    warnings.append(
+                        f"계좌 {i+1}: ISA 월 ${acct.monthly:.0f} → 연 ${annual:.0f}. "
+                        f"한국 ISA 연간 한도(약 $1,850)를 초과할 수 있습니다."
+                    )
+
+        # 레버리지 ETF + 낮은 변동성 경고
+        leveraged = {"SSO", "QLD", "TQQQ", "UPRO", "SOXL"}
+        if self.strategy.type:
+            from aftertaxi.strategies.metadata import get_metadata
+            try:
+                meta = get_metadata(self.strategy.type)
+                used_assets = set(meta.default_weights.keys())
+                if used_assets & leveraged:
+                    warnings.append(
+                        f"레버리지 ETF({used_assets & leveraged}) 포함. "
+                        f"합성 데이터 사용 시 변동성을 30%+ 로 설정하세요 (실제 vol ≈ 30~50%)."
+                    )
+            except KeyError:
+                pass
+
+        # 장기 + 고액
+        total_monthly = sum(a.monthly or 0 for a in self.accounts)
+        if self.n_months and self.n_months > 120 and total_monthly > 2000:
+            warnings.append(
+                f"10년+ 고액 적립(월 ${total_monthly:,.0f}): "
+                f"종합과세 누진구간 진입 가능. progressive 세율 확인을 권장합니다."
+            )
+
+        return warnings
+
     def to_dict(self) -> dict:
         """compile.compile_backtest()가 먹는 형식으로 변환."""
         d: dict = {"strategy": self.strategy.to_dict()}
