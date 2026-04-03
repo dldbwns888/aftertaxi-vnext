@@ -317,8 +317,8 @@ def main():
                     st.write(f"**{key2.upper()}**")
                     _render_tax_timeline(r2)
         else:
-            t_res, t_chart, t_tax, t_isa, t_dbg = st.tabs(
-                ["결과", "차트", "세금", "ISA 절세", "디버그"])
+            t_res, t_chart, t_tax, t_isa, t_sens, t_dbg = st.tabs(
+                ["결과", "차트", "세금", "ISA 절세", "민감도", "디버그"])
             with t_res:
                 _render_metrics(r1, a1)
                 # 해석 텍스트 (#10)
@@ -362,6 +362,22 @@ def main():
                     st.metric("절세액", f"₩{ts.tax_savings_krw:,.0f}",
                               delta=f"{ts.mult_improvement:+.3f}x")
                     st.text(ts.summary_text())
+            with t_sens:
+                st.subheader("민감도 히트맵 (성장률 × 변동성)")
+                st.caption("합성 데이터에서 시장 환경별 세후 배수 분포")
+                if st.button("민감도 분석 실행", key="sens_btn"):
+                    with st.spinner("25개 시나리오 실행 중..."):
+                        from aftertaxi.workbench.sensitivity import run_sensitivity
+                        grid = run_sensitivity(
+                            strategy_payload={"type": key1},
+                            n_months=state.get("n_months", 240),
+                            fx_rate=state.get("fx_rate", 1300.0),
+                            seed=state.get("seed", 42),
+                        )
+                    df = grid.to_dataframe()
+                    st.dataframe(df.style.background_gradient(cmap="RdYlGn", axis=None),
+                                 use_container_width=True)
+                    st.text(grid.summary_text())
             with t_dbg:
                 st.json(draft1.to_dict())
 

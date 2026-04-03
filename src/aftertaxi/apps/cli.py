@@ -114,6 +114,10 @@ def main(argv=None):
     parser.add_argument("--lane-d-years", type=int, default=100, help="Lane D 경로 길이 (년)")
     parser.add_argument("--lane-d-jobs", type=int, default=1, help="Lane D 병렬 워커 수")
 
+    # 추가 분석
+    parser.add_argument("--sensitivity", action="store_true", help="민감도 히트맵 (growth × vol)")
+    parser.add_argument("--watch", action="store_true", help="파일 변경 감지 → 자동 재실행")
+
     args = parser.parse_args(argv)
 
     # 1. JSON 읽기
@@ -188,12 +192,71 @@ def main(argv=None):
             print(lane_d_report.summary_text())
             print()
 
+    # 7. 민감도 (optional)
+    if args.sensitivity:
+        from aftertaxi.workbench.sensitivity import run_sensitivity
+        print("민감도 분석 실행 중...")
+        grid = run_sensitivity(
+            strategy_payload=payload.get("strategy", {"type": "spy_bnh"}),
+            n_months=n_months,
+            fx_rate=args.fx,
+            seed=args.seed,
+        )
+        print(grid.summary_text())
+        print()
+        df = grid.to_dataframe()
+        print("  성장률 →")
+        print(f"  변동성↓  {df.to_string()}")
+        print()
+
     return result
 
 
+def _run_once(argv):
+    """한 번 실행. watch 모드용."""
+    try:
+        main(argv)
+    except SystemExit:
+        pass
+    except Exception as e:
+        print(f"실행 오류: {e}")
+
+
 def entry_point():
-    """패키지 엔트리포인트. exit code 0 반환."""
-    main()
+    """패키지 엔트리포인트."""
+    import sys as _sys
+    argv = _sys.argv[1:]
+
+    # --watch 모드
+    if "--watch" in argv:
+        watch_argv = [a for a in argv if a != "--watch"]
+        config_path = watch_argv[0] if watch_argv else None
+        if not config_path or config_path == "-":
+            print("--watch는 파일 경로가 필요합니다 (stdin 불가)")
+            return
+
+        import os, time
+        print(f"👁 Watch 모드: {config_path} 변경 감지 중... (Ctrl+C로 종료)")
+        last_mtime = 0.0
+        try:
+            while True:
+                try:
+                    mtime = os.path.getmtime(config_path)
+                except OSError:
+                    time.sleep(1)
+                    continue
+                if mtime > last_mtime:
+                    if last_mtime > 0:
+                        print(f"\n{'═' * 60}")
+                        print(f"  파일 변경 감지: {config_path}")
+                        print(f"{'═' * 60}\n")
+                    _run_once(watch_argv)
+                    last_mtime = mtime
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\nWatch 종료.")
+    else:
+        main()
 
 
 if __name__ == "__main__":
