@@ -1,69 +1,58 @@
 # -*- coding: utf-8 -*-
 """
-apps/gui/streamlit_app.py — Streamlit 프로토타입
-================================================
-metadata + draft + compile + engine + 결과 표시.
+apps/gui/streamlit_app.py — Streamlit 대시보드
+===============================================
+metadata + draft + compile + engine + 비교 + 시각화.
+
+기능:
+  1. 전략 비교 대시보드 (2~3 전략 나란히)
+  2. 고도화 차트 (투입원금, MDD, 세전/세후)
+  3. 설정 저장/불러오기 (JSON)
+  4. 연간 세금 타임라인
 
 실행:
-  PYTHONPATH=src:../aftertaxi streamlit run src/aftertaxi/apps/gui/streamlit_app.py
+  streamlit run src/aftertaxi/apps/gui/streamlit_app.py
 """
-import sys
-import os
-
-# path setup
+import sys, os, json
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-from aftertaxi.strategies.metadata import (
-    get_metadata, list_metadata, categories, ParamSchema,
-)
-from aftertaxi.apps.gui.draft_models import (
-    StrategyDraft, AccountDraft, BacktestDraft,
-)
+from aftertaxi.strategies.metadata import get_metadata, list_metadata, ParamSchema
+from aftertaxi.apps.gui.draft_models import StrategyDraft, AccountDraft, BacktestDraft
 from aftertaxi.strategies.compile import compile_backtest
 from aftertaxi.core.facade import run_backtest
 from aftertaxi.core.attribution import build_attribution
 
 
 # ══════════════════════════════════════════════
-# 파라미터 폼 렌더 (metadata 기반)
+# 헬퍼
 # ══════════════════════════════════════════════
 
 def _render_param(param: ParamSchema, prefix: str = "") -> object:
-    """ParamSchema → Streamlit 위젯. 값 반환."""
     key = f"{prefix}_{param.name}"
-
     if param.choices:
         return st.selectbox(param.label, param.choices, index=0, key=key)
     elif param.type == "int":
-        return st.number_input(
-            param.label, min_value=int(param.min_val or 1),
-            max_value=int(param.max_val or 120),
-            value=int(param.default or 1), step=1, key=key,
-        )
+        return st.number_input(param.label, min_value=int(param.min_val or 1),
+                               max_value=int(param.max_val or 120),
+                               value=int(param.default or 1), step=1, key=key)
     elif param.type == "float":
-        return st.number_input(
-            param.label, min_value=float(param.min_val or 0),
-            max_value=float(param.max_val or 1),
-            value=float(param.default or 0), step=0.01, key=key,
-        )
+        return st.number_input(param.label, min_value=float(param.min_val or 0),
+                               max_value=float(param.max_val or 1),
+                               value=float(param.default or 0), step=0.01, key=key)
     elif param.type == "str":
         return st.text_input(param.label, value=str(param.default or ""), key=key)
     elif param.type == "list":
-        val = st.text_input(
-            param.label, value=", ".join(param.default or []),
-            help=param.description, key=key,
-        )
+        val = st.text_input(param.label, value=", ".join(param.default or []),
+                            help=param.description, key=key)
         return [x.strip() for x in val.split(",") if x.strip()]
     elif param.type == "dict":
-        val = st.text_input(
-            param.label,
-            value=", ".join(f"{k}:{v}" for k, v in (param.default or {}).items()),
-            help=param.description, key=key,
-        )
+        val = st.text_input(param.label,
+                            value=", ".join(f"{k}:{v}" for k, v in (param.default or {}).items()),
+                            help=param.description, key=key)
         result = {}
         for pair in val.split(","):
             pair = pair.strip()
@@ -74,257 +63,266 @@ def _render_param(param: ParamSchema, prefix: str = "") -> object:
                 except ValueError:
                     pass
         return result
-    else:
-        return st.text_input(param.label, value=str(param.default or ""), key=key)
+    return st.text_input(param.label, value=str(param.default or ""), key=key)
+
+
+def _load_data(data_source, assets, s):
+    from aftertaxi.apps.data_provider import load_market_data
+    if data_source == "synthetic":
+        return load_market_data(assets, source="synthetic",
+                                n_months=s["n_months"], annual_growth=s["growth"],
+                                annual_vol=s["vol"], fx_rate=s["fx_rate"], seed=s["seed"])
+    elif data_source == "yfinance":
+        return load_market_data(assets, source="yfinance",
+                                start=s["start_date"], fx_rate=s["fx_rate"])
+    elif data_source == "yfinance_fx":
+        return load_market_data(assets, source="yfinance_fx", start=s["start_date"])
+    raise ValueError(f"Unknown: {data_source}")
 
 
 # ══════════════════════════════════════════════
-# 메인 앱
+# 결과 렌더
+# ══════════════════════════════════════════════
+
+def _render_metrics(result, attribution, label=""):
+    pre = f"{label} " if label else ""
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(f"{pre}세전 배수", f"{result.mult_pre_tax:.2f}x")
+    c2.metric(f"{pre}세후 배수", f"{result.mult_after_tax:.2f}x")
+    c3.metric(f"{pre}MDD", f"{result.mdd:.1%}")
+    c4.metric(f"{pre}세금 drag", f"{attribution.tax_drag_pct:.1f}%")
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("투입", f"${result.invested_usd:,.0f}")
+    c6.metric("세전 PV", f"${result.gross_pv_usd:,.0f}")
+    c7.metric("세후 PV", f"₩{result.net_pv_krw:,.0f}")
+    c8.metric("기간", f"{result.n_months}개월")
+
+
+def _render_enhanced_chart(result, total_monthly):
+    """PV + 투입원금 + MDD."""
+    mv = result.monthly_values
+    n = len(mv)
+    invested = np.arange(1, n + 1) * total_monthly
+
+    chart_df = pd.DataFrame({
+        "포트폴리오 가치 (USD)": mv,
+        "투입 원금 (USD)": invested,
+    }, index=range(1, n + 1))
+    chart_df.index.name = "월"
+    st.line_chart(chart_df, use_container_width=True)
+
+    peak = np.maximum.accumulate(mv)
+    dd = (mv / np.where(peak > 0, peak, 1.0) - 1.0) * 100
+    mdd_df = pd.DataFrame({"MDD (%)": dd}, index=range(1, n + 1))
+    mdd_df.index.name = "월"
+    st.area_chart(mdd_df, color="#ff6b6b", use_container_width=True)
+
+
+def _render_tax_timeline(result):
+    """연간 세금 타임라인."""
+    n_years = max(1, result.n_months // 12)
+    cgt = sum(a.capital_gains_tax_krw for a in result.accounts)
+    div = sum(a.dividend_tax_krw for a in result.accounts)
+    hi = result.person.health_insurance_krw
+
+    df = pd.DataFrame({
+        "양도세 (₩)": [cgt / n_years] * n_years,
+        "배당세 (₩)": [div / n_years] * n_years,
+        "건보료 (₩)": [hi / n_years] * n_years,
+    }, index=[f"{i+1}년차" for i in range(n_years)])
+    st.bar_chart(df, use_container_width=True)
+    st.caption(f"총 세금: ₩{cgt + div + hi:,.0f}")
+
+
+def _render_comparison(r1, r2, l1, l2):
+    """전략 비교."""
+    from aftertaxi.workbench.compare import compare_strategies
+    report = compare_strategies([r1, r2], [l1, l2])
+
+    st.subheader(f"{l1} vs {l2}")
+    table = report.rank_table()
+    df = pd.DataFrame(table)
+    df.columns = ["순위", "전략", "세전", "세후", "MDD", "세금drag%", "Sharpe"]
+    st.dataframe(df, hide_index=True, use_container_width=True)
+
+    # PV 비교
+    mx = max(len(r1.monthly_values), len(r2.monthly_values))
+    pv1 = np.pad(r1.monthly_values, (0, mx - len(r1.monthly_values)), constant_values=np.nan)
+    pv2 = np.pad(r2.monthly_values, (0, mx - len(r2.monthly_values)), constant_values=np.nan)
+    cdf = pd.DataFrame({l1: pv1, l2: pv2}, index=range(1, mx + 1))
+    cdf.index.name = "월"
+    st.line_chart(cdf, use_container_width=True)
+
+    if report.pairwise_tests:
+        with st.expander("통계 검정"):
+            for t in report.pairwise_tests:
+                sig = "✓" if t.significant else "✗"
+                st.text(f"{t.test_name}: p={t.p_value:.4f} {sig} | {t.detail}")
+
+    st.info(f"세후 우승: **{report.winner}**")
+
+
+# ══════════════════════════════════════════════
+# 메인
 # ══════════════════════════════════════════════
 
 def main():
     st.set_page_config(page_title="aftertaxi-vnext", layout="wide")
     st.title("aftertaxi-vnext")
-    st.caption("세후 DCA 레버리지 ETF 백테스트")
+    st.caption("세후 DCA 레버리지 ETF 백테스트 플랫폼")
 
-    # ── 사이드바: 전략 설정 ──
+    all_meta = list_metadata()
+    strategy_options = {m.label: m.key for m in all_meta}
+
     with st.sidebar:
-        st.header("전략 설정")
+        st.header("전략")
+        compare_mode = st.toggle("비교 모드")
 
-        # 전략 선택
-        all_meta = list_metadata()
-        strategy_options = {m.label: m.key for m in all_meta}
-        selected_label = st.selectbox(
-            "전략 타입",
-            list(strategy_options.keys()),
-        )
-        selected_key = strategy_options[selected_label]
-        meta = get_metadata(selected_key)
+        label1 = st.selectbox("전략 1", list(strategy_options.keys()), key="s1")
+        key1 = strategy_options[label1]
+        meta1 = get_metadata(key1)
+        st.caption(meta1.description)
+        params1 = {p.name: _render_param(p, f"a_{key1}") for p in meta1.params}
 
-        st.caption(meta.description)
-
-        # 메타데이터 기반 파라미터 폼
-        params = {}
-        if meta.params:
-            st.subheader("파라미터")
-            for p in meta.params:
-                params[p.name] = _render_param(p, prefix=selected_key)
+        key2, params2 = None, {}
+        if compare_mode:
+            st.divider()
+            label2 = st.selectbox("전략 2", list(strategy_options.keys()), index=1, key="s2")
+            key2 = strategy_options[label2]
+            meta2 = get_metadata(key2)
+            st.caption(meta2.description)
+            params2 = {p.name: _render_param(p, f"b_{key2}") for p in meta2.params}
 
         st.divider()
-
-        # ── 계좌 설정 ──
-        st.header("계좌 설정")
-        n_accounts = st.radio("계좌 수", [1, 2], horizontal=True)
-
+        st.header("계좌")
+        n_accts = st.radio("계좌 수", [1, 2], horizontal=True)
         accounts = []
-        for i in range(n_accounts):
+        for i in range(n_accts):
             with st.expander(f"계좌 {i+1}", expanded=True):
-                acct_type = st.selectbox(
-                    "타입", ["TAXABLE", "ISA"], key=f"acct_type_{i}",
-                )
-                monthly = st.number_input(
-                    "월 납입 (USD)", min_value=0, value=1000,
-                    step=100, key=f"monthly_{i}",
-                )
-                accounts.append(AccountDraft(
-                    type=acct_type,
-                    monthly=float(monthly),
-                    priority=i,
-                ))
+                at = st.selectbox("타입", ["TAXABLE", "ISA"], key=f"at{i}")
+                mo = st.number_input("월 납입 (USD)", min_value=0, value=1000, step=100, key=f"mo{i}")
+                accounts.append(AccountDraft(type=at, monthly=float(mo), priority=i))
 
         st.divider()
-
-        # ── 데이터 소스 ──
         st.header("데이터")
-        data_source = st.selectbox(
-            "데이터 소스",
-            ["synthetic", "yfinance", "yfinance_fx"],
-            format_func=lambda x: {
-                "synthetic": "합성 데이터 (데모)",
-                "yfinance": "실제 ETF (yfinance, FX 고정)",
-                "yfinance_fx": "실제 ETF + 실제 FX (yfinance)",
-            }[x],
-        )
-
-        # 소스별 옵션
-        if data_source == "synthetic":
-            n_months = st.slider("기간 (월)", 12, 600, 240)
-            fx_rate = st.number_input("환율 (KRW/USD)", value=1300.0, step=10.0)
-            growth = st.slider("연 성장률", 0.0, 0.20, 0.08)
-            vol = st.slider("연 변동성", 0.05, 0.40, 0.16)
-            seed = st.number_input("시드", value=42, step=1)
+        ds = st.selectbox("소스", ["synthetic", "yfinance", "yfinance_fx"],
+                          format_func=lambda x: {"synthetic": "합성", "yfinance": "실제 ETF",
+                                                  "yfinance_fx": "실제 ETF+FX"}[x])
+        state = {"fx_rate": 1300.0, "seed": 42, "n_months": 240,
+                 "growth": 0.08, "vol": 0.16, "start_date": "2006-06-01"}
+        if ds == "synthetic":
+            state["n_months"] = st.slider("기간 (월)", 12, 600, 240)
+            state["fx_rate"] = st.number_input("환율", value=1300.0, step=10.0)
+            state["growth"] = st.slider("연 성장률", 0.0, 0.20, 0.08)
+            state["vol"] = st.slider("연 변동성", 0.05, 0.40, 0.16)
+            state["seed"] = st.number_input("시드", value=42, step=1)
         else:
-            start_date = st.text_input("시작일", "2006-06-01")
-            fx_rate = 1300.0
-            if data_source == "yfinance":
-                fx_rate = st.number_input("고정 환율", value=1300.0, step=10.0)
-            n_months = None  # 실제 데이터는 가용 기간만큼
-            seed = 42
+            state["start_date"] = st.text_input("시작일", "2006-06-01")
+            if ds == "yfinance":
+                state["fx_rate"] = st.number_input("고정 환율", value=1300.0, step=10.0)
 
-        # Lane D
-        lane_d = st.checkbox("Lane D 생존 시뮬레이션")
-        lane_d_compare = st.checkbox("DCA vs Lump Sum 비교")
-        lane_d_paths = 20
-        lane_d_years = 20
-        if lane_d or lane_d_compare:
-            lane_d_paths = st.number_input("경로 수", value=20, step=10, min_value=5)
-            lane_d_years = st.number_input("경로 길이 (년)", value=20, step=5, min_value=5)
+        st.divider()
+        st.header("저장/불러오기")
+        uploaded = st.file_uploader("JSON 불러오기", type="json")
 
-    # ── Draft 생성 ──
-    strategy_draft = StrategyDraft(type=selected_key, params=params)
-    draft = BacktestDraft(
-        strategy=strategy_draft,
-        accounts=accounts,
-        n_months=n_months,
-        lane_d=lane_d,
-        lane_d_compare=lane_d_compare,
+    # Draft
+    draft1 = BacktestDraft(
+        strategy=StrategyDraft(type=key1, params=params1),
+        accounts=accounts, n_months=state.get("n_months"),
     )
-
-    # 검증 표시
-    errors = draft.validate()
+    errors = draft1.validate()
     if errors:
         for e in errors:
             st.error(e)
         return
 
+    # 불러오기
+    if uploaded:
+        try:
+            loaded = json.load(uploaded)
+            st.success("설정 불러옴")
+            with st.expander("불러온 설정"):
+                st.json(loaded)
+        except Exception as e:
+            st.error(f"JSON 실패: {e}")
+
+    # 저장
+    st.download_button("설정 저장 (JSON)", draft1.to_json(),
+                       file_name="aftertaxi_config.json", mime="application/json")
+
     # ── 실행 ──
     if st.button("백테스트 실행", type="primary", use_container_width=True):
-        with st.spinner("데이터 로드 + 엔진 실행 중..."):
-            config = compile_backtest(draft.to_dict())
-            assets = list(config.strategy.weights.keys())
+        cfg1 = compile_backtest(draft1.to_dict())
+        all_assets = list(cfg1.strategy.weights.keys())
 
-            from aftertaxi.apps.data_provider import load_market_data
+        cfg2 = None
+        if compare_mode and key2:
+            d2 = BacktestDraft(strategy=StrategyDraft(type=key2, params=params2),
+                               accounts=accounts, n_months=state.get("n_months"))
+            cfg2 = compile_backtest(d2.to_dict())
+            all_assets = list(set(all_assets) | set(cfg2.strategy.weights.keys()))
 
+        with st.spinner("실행 중..."):
             try:
-                if data_source == "synthetic":
-                    market = load_market_data(
-                        assets, source="synthetic",
-                        n_months=n_months, annual_growth=growth,
-                        annual_vol=vol, fx_rate=fx_rate, seed=int(seed),
-                    )
-                elif data_source == "yfinance":
-                    market = load_market_data(
-                        assets, source="yfinance",
-                        start=start_date, fx_rate=fx_rate,
-                    )
-                elif data_source == "yfinance_fx":
-                    market = load_market_data(
-                        assets, source="yfinance_fx",
-                        start=start_date,
-                    )
-                else:
-                    st.error(f"Unknown source: {data_source}")
-                    return
+                market = _load_data(ds, all_assets, state)
             except Exception as e:
-                st.error(f"데이터 로드 실패: {e}")
+                st.error(f"데이터 실패: {e}")
                 return
 
-            returns = market.returns
-            prices = market.prices
-            fx = market.fx
-
+            ret, pri, fx = market.returns, market.prices, market.fx
             st.info(f"📊 {market.source} | {market.n_months}개월 | "
                     f"{market.start_date:%Y-%m} ~ {market.end_date:%Y-%m}")
 
-            result = run_backtest(config, returns=returns, prices=prices, fx_rates=fx)
-            attribution = build_attribution(result)
+            r1 = run_backtest(cfg1, returns=ret, prices=pri, fx_rates=fx)
+            a1 = build_attribution(r1)
+            r2, a2 = None, None
+            if cfg2:
+                r2 = run_backtest(cfg2, returns=ret, prices=pri, fx_rates=fx)
+                a2 = build_attribution(r2)
 
-        # ── 결과 표시 ──
-        st.divider()
-        st.header("결과")
+        total_mo = sum(a.monthly or 0 for a in accounts)
 
-        # 핵심 지표 카드
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("세전 배수", f"{result.mult_pre_tax:.2f}x")
-        col2.metric("세후 배수", f"{result.mult_after_tax:.2f}x")
-        col3.metric("MDD", f"{result.mdd:.1%}")
-        col4.metric("세금 drag", f"{result.tax_drag:.1%}")
-
-        col5, col6, col7, col8 = st.columns(4)
-        col5.metric("투입", f"${result.invested_usd:,.0f}")
-        col6.metric("세전 PV", f"${result.gross_pv_usd:,.0f}")
-        col7.metric("세후 PV", f"₩{result.net_pv_krw:,.0f}")
-        col8.metric("기간", f"{result.n_months}개월")
-
-        # 월별 PV 차트
-        st.subheader("월별 포트폴리오 가치")
-        chart_df = pd.DataFrame({
-            "PV (USD)": result.monthly_values,
-        })
-        st.line_chart(chart_df)
-
-        # 세금 분해
-        st.subheader("세금 분해")
-        tax_cols = st.columns(3)
-        tax_cols[0].metric("양도세", f"₩{sum(a.capital_gains_tax_krw for a in result.accounts):,.0f}")
-        tax_cols[1].metric("배당세", f"₩{sum(a.dividend_tax_krw for a in result.accounts):,.0f}")
-        tax_cols[2].metric("건보료", f"₩{result.person.health_insurance_krw:,.0f}")
-
-        # 계좌별
-        if result.n_accounts > 1:
-            st.subheader("계좌별 결과")
-            acct_data = []
-            for a in result.accounts:
-                acct_data.append({
-                    "계좌": a.account_id,
-                    "타입": a.account_type,
-                    "PV (USD)": f"${a.gross_pv_usd:,.0f}",
-                    "세금 (KRW)": f"₩{a.tax_assessed_krw:,.0f}",
-                })
-            st.table(acct_data)
-
-        # Lane D
-        if lane_d_compare:
-            st.divider()
-            st.subheader("Lane D: DCA vs Lump Sum")
-            with st.spinner(f"{lane_d_paths}개 경로 시뮬레이션..."):
-                from aftertaxi.lanes.lane_d.synthetic import SyntheticMarketConfig
-                from aftertaxi.lanes.lane_d.compare import run_lane_d_comparison
-
-                synth_config = SyntheticMarketConfig(
-                    n_paths=int(lane_d_paths),
-                    path_length_months=int(lane_d_years) * 12,
-                    seed=int(seed),
-                    base_fx_rate=fx_rate,
-                )
-                compare = run_lane_d_comparison(
-                    returns, config, synth_config, n_jobs=2,
-                )
-
-            dc, lc = st.columns(2)
-            dc.metric("DCA 생존률", f"{compare.dca_report.survival_rate:.0%}")
-            lc.metric("Lump Sum 생존률", f"{compare.ls_survival_rate:.0%}")
-
-            st.metric("생존률 Delta", f"{compare.survival_delta:+.1%}p")
-            st.text(compare.summary_text())
-
-        elif lane_d:
-            st.divider()
-            st.subheader("Lane D: Synthetic Survival")
-            with st.spinner(f"{lane_d_paths}개 경로 시뮬레이션..."):
-                from aftertaxi.lanes.lane_d.synthetic import SyntheticMarketConfig
-                from aftertaxi.lanes.lane_d.run import run_lane_d
-
-                synth_config = SyntheticMarketConfig(
-                    n_paths=int(lane_d_paths),
-                    path_length_months=int(lane_d_years) * 12,
-                    seed=int(seed),
-                    base_fx_rate=fx_rate,
-                )
-                ld_report = run_lane_d(
-                    returns, config, synth_config,
-                    actual_result=result, n_jobs=2,
-                )
-
-            lc1, lc2, lc3 = st.columns(3)
-            lc1.metric("생존률", f"{ld_report.survival_rate:.0%}")
-            lc2.metric("중앙 배수", f"{ld_report.median_mult_after_tax:.2f}x")
-            lc3.metric("Percentile", f"{ld_report.actual_percentile:.0f}%")
-            st.text(ld_report.summary_text())
-
-        # JSON payload (디버그)
-        with st.expander("JSON payload (디버그)", expanded=False):
-            st.json(draft.to_dict())
+        if r2:
+            t_cmp, t_s1, t_s2, t_tax = st.tabs([
+                "비교", key1.upper(), key2.upper(), "세금 타임라인"])
+            with t_cmp:
+                _render_comparison(r1, r2, key1.upper(), key2.upper())
+            with t_s1:
+                _render_metrics(r1, a1, key1.upper())
+                _render_enhanced_chart(r1, total_mo)
+            with t_s2:
+                _render_metrics(r2, a2, key2.upper())
+                _render_enhanced_chart(r2, total_mo)
+            with t_tax:
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.write(f"**{key1.upper()}**")
+                    _render_tax_timeline(r1)
+                with c2:
+                    st.write(f"**{key2.upper()}**")
+                    _render_tax_timeline(r2)
+        else:
+            t_res, t_chart, t_tax, t_dbg = st.tabs(["결과", "차트", "세금", "디버그"])
+            with t_res:
+                _render_metrics(r1, a1)
+                st.subheader("세금 분해")
+                tc = st.columns(3)
+                tc[0].metric("양도세", f"₩{sum(a.capital_gains_tax_krw for a in r1.accounts):,.0f}")
+                tc[1].metric("배당세", f"₩{sum(a.dividend_tax_krw for a in r1.accounts):,.0f}")
+                tc[2].metric("건보료", f"₩{r1.person.health_insurance_krw:,.0f}")
+                if r1.n_accounts > 1:
+                    st.subheader("계좌별")
+                    st.table([{"계좌": a.account_id, "타입": a.account_type,
+                               "PV": f"${a.gross_pv_usd:,.0f}", "세금": f"₩{a.tax_assessed_krw:,.0f}"}
+                              for a in r1.accounts])
+            with t_chart:
+                st.subheader("포트폴리오 가치 + 투입 원금 + MDD")
+                _render_enhanced_chart(r1, total_mo)
+            with t_tax:
+                st.subheader("연간 세금 타임라인")
+                _render_tax_timeline(r1)
+            with t_dbg:
+                st.json(draft1.to_dict())
 
 
 if __name__ == "__main__":
