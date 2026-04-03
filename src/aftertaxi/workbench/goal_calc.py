@@ -35,12 +35,13 @@ class GoalCalcResult:
     achieved_krw: float
     n_months: int
     iterations: int
+    fx_rate: float = 1300.0
 
     def summary_text(self) -> str:
         years = self.n_months / 12
         return (
             f"목표: ₩{self.target_krw:,.0f} ({years:.0f}년)\n"
-            f"필요 월 납입: ${self.monthly_usd:,.0f} (≈ ₩{self.monthly_usd * 1300:,.0f})\n"
+            f"필요 월 납입: ${self.monthly_usd:,.0f} (≈ ₩{self.monthly_usd * self.fx_rate:,.0f})\n"
             f"예상 달성: ₩{self.achieved_krw:,.0f}\n"
             f"({self.iterations}회 탐색)"
         )
@@ -80,7 +81,10 @@ def find_monthly_for_goal(
             payload["n_months"] = n_months
         config = compile_backtest(payload)
         result = run_backtest(config, returns=returns, prices=prices, fx_rates=fx_rates)
-        return result.gross_pv_krw
+        return result.net_pv_krw
+
+    # fx_rate for display
+    _fx = float(fx_rates.iloc[-1]) if hasattr(fx_rates, 'iloc') else float(fx_rates)
 
     iterations = 0
     for _ in range(max_iter):
@@ -92,7 +96,7 @@ def find_monthly_for_goal(
             return GoalCalcResult(
                 target_krw=target_krw, monthly_usd=mid,
                 achieved_krw=achieved, n_months=n_months or len(returns),
-                iterations=iterations,
+                iterations=iterations, fx_rate=_fx,
             )
 
         if achieved < target_krw:
@@ -106,5 +110,5 @@ def find_monthly_for_goal(
     return GoalCalcResult(
         target_krw=target_krw, monthly_usd=mid,
         achieved_krw=achieved, n_months=n_months or len(returns),
-        iterations=iterations,
+        iterations=iterations, fx_rate=_fx,
     )

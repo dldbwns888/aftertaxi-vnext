@@ -95,11 +95,13 @@ def simulate_tax_savings(
     cfg_m = compile_backtest(payload_m)
     r_m = run_backtest(cfg_m, returns=returns, prices=prices, fx_rates=fx_rates)
 
-    # 배수 계산 — reporting_fx_rate 사용 (하드코딩 금지)
-    fx = r_t.reporting_fx_rate if r_t.reporting_fx_rate > 0 else 1300.0
-    invested_krw = r_t.invested_usd * fx
-    t_mult = r_t.gross_pv_krw / invested_krw if invested_krw > 0 else 0
-    m_mult = r_m.gross_pv_krw / invested_krw if invested_krw > 0 else 0
+    # 배수 계산 — net_pv_krw(세후) + reporting_fx_rate
+    fx_scalar = r_t.reporting_fx_rate if r_t.reporting_fx_rate > 0 else float(fx_rates.iloc[-1])
+    invested_krw = r_t.invested_usd * fx_scalar
+    t_mult = r_t.net_pv_krw / invested_krw if invested_krw > 0 else 0
+
+    m_invested_krw = r_m.invested_usd * fx_scalar
+    m_mult = r_m.net_pv_krw / m_invested_krw if m_invested_krw > 0 else 0
 
     return TaxSavingsReport(
         taxable_only_mult=t_mult,
