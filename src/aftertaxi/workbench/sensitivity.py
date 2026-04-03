@@ -105,8 +105,13 @@ def run_sensitivity(
                 config, returns=data.returns,
                 prices=data.prices, fx_rates=data.fx,
             )
+            # 세후 배수: net_pv_krw / invested_krw (세금 납부 후 실제 가치)
             invested_krw = result.invested_usd * fx_rate
-            matrix[i, j] = result.gross_pv_krw / invested_krw if invested_krw > 0 else 0
+            if invested_krw > 0:
+                # net_pv_krw = gross_pv_krw - tax_unpaid_krw
+                matrix[i, j] = result.net_pv_krw / invested_krw
+            else:
+                matrix[i, j] = 0
 
     return SensitivityGrid(
         growth_values=growth_range,
