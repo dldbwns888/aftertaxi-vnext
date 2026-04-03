@@ -113,6 +113,9 @@ def main(argv=None):
     parser.add_argument("--lane-d-paths", type=int, default=50, help="Lane D 경로 수")
     parser.add_argument("--lane-d-years", type=int, default=100, help="Lane D 경로 길이 (년)")
     parser.add_argument("--lane-d-jobs", type=int, default=1, help="Lane D 병렬 워커 수")
+    parser.add_argument("--lane-d-mode", type=str, default="sign_flip",
+                        choices=["sign_flip", "hmm_regime"],
+                        help="Lane D 경로 생성 모드")
 
     # 추가 분석
     parser.add_argument("--sensitivity", action="store_true", help="민감도 히트맵 (growth × vol)")
@@ -166,6 +169,7 @@ def main(argv=None):
             path_length_months=args.lane_d_years * 12,
             seed=args.seed,
             base_fx_rate=args.fx,
+            mode=args.lane_d_mode,
         )
 
         if args.lane_d_compare:

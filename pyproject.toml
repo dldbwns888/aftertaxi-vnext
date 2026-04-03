@@ -19,6 +19,7 @@ dependencies = [
 data = [
     "yfinance>=0.2",
     "requests>=2.28",
+    "hmmlearn>=0.3",
 ]
 parallel = [
     "joblib>=1.3",
