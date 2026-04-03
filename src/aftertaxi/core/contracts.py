@@ -35,6 +35,7 @@ class AccountType(str, Enum):
 class RebalanceMode(str, Enum):
     CONTRIBUTION_ONLY = "CONTRIBUTION_ONLY"
     FULL = "FULL"
+    BAND = "BAND"    # 비중 괴리가 threshold 초과 시 FULL, 이내면 C/O
     BUDGET = "BUDGET"  # ⚠ 미구현 → facade에서 예외. 세금 예산 이내에서만 FULL
 
 
@@ -76,6 +77,7 @@ class AccountConfig:
     allowed_assets: Optional[set] = None  # 허용 자산 집합. None이면 전체 허용
     transaction_cost_bps: float = 0.0    # 거래비용 (basis points, 매수/매도 각각 적용)
     priority: int = 0                     # 납입 우선순위 (낮을수록 먼저, allocator용)
+    band_threshold_pct: float = 0.05      # BAND 모드: 비중 괴리 임계값 (5%)
 
     def __post_init__(self):
         if self.monthly_contribution < 0:

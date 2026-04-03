@@ -135,6 +135,9 @@ def compile_account(acct_dict: dict, index: int = 0) -> AccountConfig:
     if allowed is not None:
         allowed = set(allowed)
 
+    # BAND threshold
+    band_threshold = acct_dict.get("band_threshold_pct", 0.05)
+
     return AccountConfig(
         account_id=account_id,
         account_type=preset["account_type"],
@@ -145,6 +148,7 @@ def compile_account(acct_dict: dict, index: int = 0) -> AccountConfig:
         allowed_assets=allowed,
         transaction_cost_bps=tx_bps,
         priority=priority,
+        band_threshold_pct=band_threshold,
     )
 
 

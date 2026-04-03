@@ -135,6 +135,12 @@ def run_engine(
 
             if order.rebalance_mode == RebalanceMode.FULL and order.should_rebalance:
                 _execute_full_rebalance(ledger, order.target_weights, price_map, fx_rate)
+            elif order.rebalance_mode == RebalanceMode.BAND and order.should_rebalance:
+                if _drift_exceeds_threshold(ledger, order.target_weights, price_map,
+                                             order.band_threshold_pct):
+                    _execute_full_rebalance(ledger, order.target_weights, price_map, fx_rate)
+                else:
+                    _execute_contribution_only(ledger, order.target_weights, price_map, fx_rate)
             else:
                 _execute_contribution_only(ledger, order.target_weights, price_map, fx_rate)
 
@@ -255,6 +261,32 @@ def _aggregate(ledgers: Dict[str, AccountLedger], reporting_fx: float) -> Engine
 # ══════════════════════════════════════════════
 
 DUST_PCT = 0.001  # 포트폴리오 대비 0.1% 미만 거래 무시
+
+
+def _drift_exceeds_threshold(
+    ledger: AccountLedger,
+    target_weights: Dict[str, float],
+    price_map: Dict[str, float],
+    threshold_pct: float,
+) -> bool:
+    """현재 비중이 목표에서 threshold 이상 벗어났는지 확인.
+
+    BAND 모드에서 FULL 리밸 트리거 판단용.
+    하나라도 초과 → True (전체 FULL 리밸).
+    """
+    total_value = ledger.total_value_usd()
+    if total_value <= 0:
+        return False  # 아직 포지션 없음 → C/O
+
+    for asset, target_w in target_weights.items():
+        pos = ledger.positions.get(asset)
+        px = price_map.get(asset, 0.0)
+        actual_value = pos.qty * px if pos and px > 0 else 0.0
+        actual_w = actual_value / total_value
+        if abs(actual_w - target_w) > threshold_pct:
+            return True
+
+    return False
 
 
 def _execute_contribution_only(

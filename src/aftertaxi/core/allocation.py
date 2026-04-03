@@ -33,8 +33,9 @@ class AccountOrder:
     account_id: str
     deposit: float                         # 이번 달 입금액
     target_weights: Dict[str, float]       # 목표 비중 (이 계좌에 해당하는 자산만)
-    rebalance_mode: RebalanceMode          # C/O or FULL
+    rebalance_mode: RebalanceMode          # C/O or FULL or BAND
     should_rebalance: bool                 # 이번 달 리밸런싱 여부
+    band_threshold_pct: float = 0.05       # BAND 모드 임계값
 
 
 class AllocationPlanner:
@@ -105,6 +106,7 @@ class AllocationPlanner:
                 target_weights=filtered,
                 rebalance_mode=acct.rebalance_mode,
                 should_rebalance=should_rebal,
+                band_threshold_pct=acct.band_threshold_pct,
             ))
 
         # 미배정 잔액 경고
