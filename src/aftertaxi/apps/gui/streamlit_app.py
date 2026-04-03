@@ -161,6 +161,11 @@ def _render_comparison(r1, r2, l1, l2):
 
     st.info(f"세후 우승: **{report.winner}**")
 
+    # 해석 (#10)
+    from aftertaxi.workbench.interpret import interpret_comparison
+    st.markdown("---")
+    st.markdown(interpret_comparison(r1, r2, l1, l2))
+
 
 # ══════════════════════════════════════════════
 # 메인
@@ -302,9 +307,15 @@ def main():
                     st.write(f"**{key2.upper()}**")
                     _render_tax_timeline(r2)
         else:
-            t_res, t_chart, t_tax, t_dbg = st.tabs(["결과", "차트", "세금", "디버그"])
+            t_res, t_chart, t_tax, t_isa, t_dbg = st.tabs(
+                ["결과", "차트", "세금", "ISA 절세", "디버그"])
             with t_res:
                 _render_metrics(r1, a1)
+                # 해석 텍스트 (#10)
+                from aftertaxi.workbench.interpret import interpret_result
+                st.markdown("---")
+                st.markdown(interpret_result(r1, a1))
+
                 st.subheader("세금 분해")
                 tc = st.columns(3)
                 tc[0].metric("양도세", f"₩{sum(a.capital_gains_tax_krw for a in r1.accounts):,.0f}")
@@ -321,6 +332,26 @@ def main():
             with t_tax:
                 st.subheader("연간 세금 타임라인")
                 _render_tax_timeline(r1)
+            with t_isa:
+                # ISA 절세 시뮬레이터 (#2)
+                st.subheader("ISA 절세 시뮬레이터")
+                st.caption("같은 전략, ISA 비중만 바꿔서 절세 효과를 비교합니다.")
+                isa_ratio = st.slider("ISA 비중", 0.0, 0.8, 0.3, 0.1, key="isa_sim")
+                if st.button("절세 시뮬레이션", key="isa_btn"):
+                    with st.spinner("ISA 시뮬레이션..."):
+                        from aftertaxi.workbench.tax_savings import simulate_tax_savings
+                        ts = simulate_tax_savings(
+                            strategy_payload={"type": key1},
+                            total_monthly=total_mo,
+                            isa_ratio=isa_ratio,
+                            returns=ret, prices=pri, fx_rates=fx,
+                        )
+                    sc1, sc2 = st.columns(2)
+                    sc1.metric("TAXABLE 100% 세금", f"₩{ts.taxable_only_tax:,.0f}")
+                    sc2.metric(f"ISA {isa_ratio:.0%} 혼합 세금", f"₩{ts.mixed_tax:,.0f}")
+                    st.metric("절세액", f"₩{ts.tax_savings_krw:,.0f}",
+                              delta=f"{ts.mult_improvement:+.3f}x")
+                    st.text(ts.summary_text())
             with t_dbg:
                 st.json(draft1.to_dict())
 
