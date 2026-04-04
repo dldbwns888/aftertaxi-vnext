@@ -217,11 +217,12 @@ def compare_strategies(
 
 @dataclass
 class ValidatedRunOutput:
-    """검증 포함 실행 결과."""
+    """검증 + 종합 판단 포함 실행 결과."""
     run: RunOutput
-    validation_report: Optional[object] = None  # ValidationReport
-    validation_grade: str = ""                   # "A" ~ "F"
+    validation_report: Optional[object] = None
+    validation_grade: str = ""
     validation_passed: bool = True
+    advisor_v2: Optional[object] = None  # AdvisorV2Report
 
 
 def run_validated_strategy(
@@ -231,10 +232,11 @@ def run_validated_strategy(
     fx_rates: pd.Series,
     data_source: str = "synthetic",
     full_validation: bool = False,
+    isa_optimize: bool = True,
 ) -> ValidatedRunOutput:
-    """검증 포함 전략 실행 — 성과 + 검증을 한 번에.
+    """검증 + 종합 판단 포함 전략 실행.
 
-    결과를 믿을 수 있는지까지 답한다.
+    결과를 믿을 수 있는지, 세후 구조가 건강한지까지 답한다.
     """
     # 1. 일반 실행
     out = run_strategy(payload, returns, prices, fx_rates,
@@ -248,7 +250,6 @@ def run_validated_strategy(
         import numpy as np
         from aftertaxi.validation import validate
 
-        # excess returns 계산 (단순: 월별 수익률)
         mv = out.result.monthly_values
         if len(mv) > 1:
             monthly_returns = np.diff(mv) / mv[:-1]
@@ -262,11 +263,50 @@ def run_validated_strategy(
             grade = vr.grade if hasattr(vr, "grade") else ""
             passed = vr.passed if hasattr(vr, "passed") else True
     except Exception:
-        pass  # 검증 실패해도 실행 결과는 유효
+        pass
+
+    # 3. Advisor 2.0 — 종합 판단
+    advisor_v2_report = None
+    try:
+        from aftertaxi.analysis.krw_attribution import build_krw_attribution
+        from aftertaxi.analysis.tax_interpretation import interpret_tax_structure
+        from aftertaxi.advisor.advisor_v2 import build_advisor_v2
+
+        krw = build_krw_attribution(out.result)
+        tax = interpret_tax_structure(out.result, out.config)
+
+        # ISA 최적화 (선택적)
+        isa_report = None
+        if isa_optimize:
+            try:
+                from aftertaxi.analysis.isa_optimizer import optimize_isa
+                strategy_payload = payload.get("strategy", {})
+                total_monthly = sum(a.monthly_contribution for a in out.config.accounts)
+                isa_report = optimize_isa(
+                    strategy_payload, total_monthly,
+                    returns, prices, fx_rates,
+                    isa_pct_range=[0, 0.5, 1.0],  # 빠른 3점 스캔
+                )
+            except Exception:
+                pass
+
+        advisor_v2_report = build_advisor_v2(
+            result=out.result,
+            config=out.config,
+            attribution=out.attribution,
+            krw_report=krw,
+            tax_report=tax,
+            isa_report=isa_report,
+            validation_report=validation_report,
+            baseline_result=out.baseline_result,
+        )
+    except Exception:
+        pass
 
     return ValidatedRunOutput(
         run=out,
         validation_report=validation_report,
         validation_grade=grade,
         validation_passed=passed,
+        advisor_v2=advisor_v2_report,
     )
