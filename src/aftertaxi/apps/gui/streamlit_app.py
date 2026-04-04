@@ -72,12 +72,13 @@ def _load_data(source, assets, s):
 # Advisor 카드
 # ══════════════════════════════════════════════
 
-def _render_advisor_card(result, attribution, config):
+def _render_advisor_card(result, attribution, config, baseline_result=None):
     """Advisor 진단 + 제안 + 원클릭 다음 실험 버튼."""
     from aftertaxi.advisor.builder import build_advisor_input
     from aftertaxi.advisor.rules import run_advisor
 
-    inp = build_advisor_input(result, attribution, config)
+    inp = build_advisor_input(result, attribution, config,
+                              baseline_result=baseline_result)
     report = run_advisor(inp)
 
     if report.n_critical > 0:
@@ -350,6 +351,25 @@ def main():
                 r2 = run_backtest(cfg2, returns=ret, prices=pri, fx_rates=fx)
                 a2 = build_attribution(r2)
 
+            # baseline 자동 비교 (SPY B&H)
+            r_baseline, a_baseline = None, None
+            if key1 != "spy_bnh":
+                try:
+                    from aftertaxi.core.contracts import (
+                        AccountConfig, AccountType, BacktestConfig as BTC,
+                        StrategyConfig as SC,
+                    )
+                    baseline_cfg = BTC(
+                        accounts=[AccountConfig("bl", AccountType.TAXABLE,
+                                                sum(a.monthly_contribution for a in cfg1.accounts))],
+                        strategy=SC("spy_bnh", {"SPY": 1.0}),
+                    )
+                    if "SPY" in pri.columns:
+                        r_baseline = run_backtest(baseline_cfg, returns=ret, prices=pri, fx_rates=fx)
+                        a_baseline = build_attribution(r_baseline)
+                except Exception:
+                    pass  # baseline 실패해도 메인 결과는 표시
+
         total_mo = sum(a.monthly or 0 for a in accounts)
 
         # 실행 기록 저장
@@ -387,11 +407,11 @@ def main():
                 _render_comparison(r1, r2, key1.upper(), key2.upper())
             with t_s1:
                 _render_summary(r1, a1)
-                _render_advisor_card(r1, a1, cfg1)
+                _render_advisor_card(r1, a1, cfg1, baseline_result=r_baseline)
                 _render_enhanced_chart(r1, total_mo)
             with t_s2:
                 _render_summary(r2, a2)
-                _render_advisor_card(r2, a2, cfg2)
+                _render_advisor_card(r2, a2, cfg2, baseline_result=r_baseline)
                 _render_enhanced_chart(r2, total_mo)
             with t_tax:
                 c1, c2 = st.columns(2)
@@ -403,16 +423,26 @@ def main():
                     _render_tax_timeline(r2)
 
         elif is_beginner:
-            # ── 초보자 모드: 요약 → Advisor → 차트 ──
+            # ── 초보자 모드: 요약 → baseline → Advisor → 차트 ──
             _render_summary(r1, a1)
+
+            # baseline 대비 판정
+            if r_baseline:
+                gap = r1.mult_after_tax - r_baseline.mult_after_tax
+                if gap > 0.05:
+                    st.success(f"📈 SPY 단순 적립 대비 **+{gap:.2f}x** 우위")
+                elif gap < -0.05:
+                    st.warning(f"📉 SPY 단순 적립 대비 **{gap:.2f}x** 열위. 복잡도 대비 이득 확인 필요.")
+                else:
+                    st.info(f"📊 SPY 단순 적립과 유사한 성과 (차이 {gap:+.2f}x)")
 
             # 해석 한 줄
             from aftertaxi.workbench.interpret import interpret_result
             st.markdown(interpret_result(r1, a1))
 
             st.divider()
-            # Advisor 카드 (핵심!)
-            _render_advisor_card(r1, a1, cfg1)
+            # Advisor 카드 (baseline 전달)
+            _render_advisor_card(r1, a1, cfg1, baseline_result=r_baseline)
 
             st.divider()
             st.subheader("포트폴리오 성장")
@@ -425,7 +455,7 @@ def main():
             with t_res:
                 _render_summary(r1, a1)
                 st.divider()
-                _render_advisor_card(r1, a1, cfg1)
+                _render_advisor_card(r1, a1, cfg1, baseline_result=r_baseline)
                 st.divider()
                 from aftertaxi.workbench.interpret import interpret_result
                 st.markdown(interpret_result(r1, a1))
