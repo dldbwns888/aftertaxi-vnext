@@ -168,25 +168,21 @@ def main(argv=None):
         with open(args.config) as f:
             payload = json.load(f)
 
-    # 2. Compile
+    # 2. Compile (자산 목록 확인용)
     from aftertaxi.strategies.compile import compile_backtest
     config = compile_backtest(payload)
-
-    # months override
     n_months = args.months or config.n_months or 240
-
-    # 3. 합성 데이터 생성
     assets = list(config.strategy.weights.keys())
 
-    # compare configs (있으면)
-    compare_configs = []
-    compare_labels = [Path(args.config).stem]
+    # compare payloads (있으면)
+    compare_payloads = []
+    compare_labels = [Path(args.config).stem if args.config not in ("-",) and not args.config.startswith("replay:") else "main"]
     if args.compare:
         for cp in args.compare:
             with open(cp) as f:
                 cp_payload = json.load(f)
             cp_cfg = compile_backtest(cp_payload)
-            compare_configs.append(cp_cfg)
+            compare_payloads.append(cp_payload)
             compare_labels.append(Path(cp).stem)
             assets = list(set(assets) | set(cp_cfg.strategy.weights.keys()))
 
@@ -196,25 +192,10 @@ def main(argv=None):
         fx_rate=args.fx, seed=args.seed,
     )
 
-    # 4. 실행
-    from aftertaxi.core.facade import run_backtest
-    result = run_backtest(config, returns=returns, prices=prices, fx_rates=fx)
-
-    # 자동 기록
-    try:
-        from aftertaxi.apps.memory import ResearchMemory
-        name = Path(args.config).stem if args.config not in ("-",) and not args.config.startswith("replay:") else "cli"
-        ResearchMemory().record(
-            config_json=json.dumps(payload, ensure_ascii=False),
-            gross_pv_usd=result.gross_pv_usd,
-            net_pv_krw=result.net_pv_krw,
-            tax_assessed_krw=result.tax.total_assessed_krw,
-            mdd=result.mdd,
-            n_months=result.n_months,
-            name=f"{name} {result.n_months//12}yr",
-        )
-    except Exception:
-        pass
+    # 4. 서비스 레이어로 실행 (compile+run+attribution+baseline+advisor+memory 전부)
+    from aftertaxi.apps.service import run_strategy
+    out = run_strategy(payload, returns, prices, fx, data_source="synthetic")
+    result = out.result
 
     # 5. 출력
     if args.json:
@@ -223,32 +204,28 @@ def main(argv=None):
             [payload], returns=returns, prices=prices, fx_rates=fx,
         ))
     else:
-        from aftertaxi.core.attribution import build_attribution
-        attribution = build_attribution(result)
-        _print_result(result, attribution)
+        _print_result(result, out.attribution)
 
     # 5.5 멀티 전략 비교 (--compare)
-    if compare_configs:
-        from aftertaxi.core.attribution import build_attribution as ba
-        from aftertaxi.workbench.compare import compare_strategies
-        results = [result]
-        for cc in compare_configs:
-            r = run_backtest(cc, returns=returns, prices=prices, fx_rates=fx)
-            results.append(r)
+    if compare_payloads:
+        all_outputs = [out]
+        for cp in compare_payloads:
+            co = run_strategy(cp, returns, prices, fx,
+                              data_source="synthetic", save_to_memory=False, run_baseline=False)
+            all_outputs.append(co)
 
-        report = compare_strategies(results, compare_labels)
         print("\n" + "=" * 60)
         print("  전략 비교")
         print("=" * 60)
-        table = report.rank_table()
-        # 헤더
         print(f"  {'순위':<4} {'전략':<20} {'세전':>8} {'세후':>10} {'MDD':>8} {'drag':>6}")
         print("  " + "-" * 56)
-        for row in table:
-            print(f"  {row['rank']:<4} {row['name']:<20} "
-                  f"{row['mult_pre_tax']:>7.2f}x {row['mult_after_tax']:>9.2f}x "
-                  f"{row['mdd']:>7.1%} {row['tax_drag']:>5.1f}%")
-        print(f"\n  세후 우승: {report.winner}")
+        ranked = sorted(zip(compare_labels, all_outputs),
+                        key=lambda x: x[1].mult_after_tax, reverse=True)
+        for i, (label, co) in enumerate(ranked):
+            print(f"  {i+1:<4} {label:<20} "
+                  f"{co.attribution.mult_pre_tax:>7.2f}x {co.mult_after_tax:>9.2f}x "
+                  f"{co.mdd:>7.1%} {co.tax_drag_pct:>5.1f}%")
+        print(f"\n  세후 우승: {ranked[0][0]}")
         print()
 
     # 6. Lane D (optional)

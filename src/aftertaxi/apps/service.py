@@ -13,25 +13,31 @@ apps/service.py — 앱 서비스 레이어
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 import pandas as pd
+
+if TYPE_CHECKING:
+    from aftertaxi.core.contracts import BacktestConfig, EngineResult
+    from aftertaxi.core.attribution import ResultAttribution
+    from aftertaxi.intent.plan import CompileTrace
+    from aftertaxi.advisor.types import AdvisorReport
 
 
 @dataclass
 class RunOutput:
-    """앱이 받는 실행 결과 전부."""
+    """앱이 받는 실행 결과 전부. 타입이 명시적."""
     # 코어 결과
-    result: object          # EngineResult
-    attribution: object     # ResultAttribution
-    config: object          # BacktestConfig
-    trace: object           # CompileTrace
+    result: EngineResult
+    attribution: ResultAttribution
+    config: BacktestConfig
+    trace: CompileTrace
 
     # Advisor
-    advisor_report: object  # AdvisorReport
+    advisor_report: AdvisorReport
 
     # baseline (있으면)
-    baseline_result: Optional[object] = None
+    baseline_result: Optional[EngineResult] = None
 
     # provenance
     data_source: str = ""
@@ -39,6 +45,25 @@ class RunOutput:
 
     # memory
     run_id: str = ""
+
+    # 편의 프로퍼티
+    @property
+    def mult_after_tax(self) -> float:
+        return self.result.mult_after_tax
+
+    @property
+    def mdd(self) -> float:
+        return self.result.mdd
+
+    @property
+    def tax_drag_pct(self) -> float:
+        return self.attribution.tax_drag_pct
+
+    @property
+    def baseline_gap(self) -> Optional[float]:
+        if self.baseline_result:
+            return self.result.mult_after_tax - self.baseline_result.mult_after_tax
+        return None
 
 
 def run_strategy(
