@@ -159,6 +159,34 @@ def _render_tax_timeline(result):
     st.caption(f"총 세금: ₩{total:,.0f} / 최고 부담 연도: {peak_year}년 (₩{peak_val:,.0f})")
 
 
+def _render_asset_contribution(weights, prices, invested_usd):
+    """자산별 기여 분해 차트."""
+    from aftertaxi.workbench.analytics import build_asset_contribution
+    contribs = build_asset_contribution(weights, prices, invested_usd)
+    if not contribs:
+        return
+
+    st.subheader("자산별 기여")
+    for c in contribs:
+        pct_str = f"{c.contribution_pct:+.0f}%"
+        ret_str = f"{c.cumulative_return:+.0%}"
+        dollar_str = f"${c.dollar_contribution:+,.0f}" if c.dollar_contribution != 0 else ""
+        st.markdown(f"**{c.asset}** ({c.target_weight:.0%}) — 수익률 {ret_str}, 기여 {pct_str} {dollar_str}")
+
+
+def _render_underwater(monthly_values):
+    """Underwater (drawdown) 차트."""
+    from aftertaxi.workbench.analytics import build_underwater
+    uw = build_underwater(monthly_values)
+    if len(uw.drawdown) == 0:
+        return
+
+    dd_df = pd.DataFrame({"낙폭 (%)": uw.drawdown * 100}, index=range(1, len(uw.drawdown) + 1))
+    dd_df.index.name = "월"
+    st.area_chart(dd_df, color="#ff6b6b", use_container_width=True)
+    st.caption(f"최대 낙폭: {uw.max_drawdown:.1%} / 최장 회복: {uw.max_recovery_months}개월")
+
+
 def _render_comparison(r1, r2, l1, l2):
     from aftertaxi.workbench.compare import compare_strategies
     report = compare_strategies([r1, r2], [l1, l2])
@@ -508,6 +536,8 @@ def main():
             st.divider()
             st.subheader("포트폴리오 성장")
             _render_enhanced_chart(r1, total_mo)
+            _render_underwater(r1.monthly_values)
+            _render_asset_contribution(cfg1.strategy.weights, pri, r1.invested_usd)
 
         else:
             # ── 고급 모드: 탭 전체 ──
@@ -533,6 +563,8 @@ def main():
                               for a in r1.accounts])
             with t_chart:
                 _render_enhanced_chart(r1, total_mo)
+                _render_underwater(r1.monthly_values)
+                _render_asset_contribution(cfg1.strategy.weights, pri, r1.invested_usd)
             with t_tax:
                 _render_tax_timeline(r1)
             with t_isa:
