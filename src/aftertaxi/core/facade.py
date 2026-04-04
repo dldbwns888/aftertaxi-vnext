@@ -64,7 +64,7 @@ def _validate_config(config: BacktestConfig) -> None:
         if acct.lot_method != "AVGCOST":
             raise NotImplementedError(
                 f"계좌 '{acct.account_id}': lot_method='{acct.lot_method}'는 미구현. "
-                "현재 AVGCOST만 지원."
+                "현재 AVGCOST만 지원. FIFO/HIFO는 scope outside."
             )
 
 

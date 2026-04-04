@@ -31,7 +31,8 @@
 | 영역 | 이유 |
 |---|---|
 | **ledger.py 대수술** | 관리 가능 상태. 분해는 2개 이상 기능 추가 후 |
-| **BAND/BUDGET 구현** | 파라미터 의미론 비용 > 이득 |
+| **FIFO/HIFO lot method** | 한국용 AVGCOST 전용. 복잡도 비용 > 기능 가치 |
+| **BUDGET rebalance** | 파라미터 의미론 비용 > 이득 |
 | **PENSION 계좌** | 별도 세금 체계. 독립 설계 필요 |
 | **runner에 정책 분기 추가** | settlement로 위임. runner는 순서만 |
 | **새 레포 분리** | vnext 안에서만 확장 |
@@ -69,7 +70,7 @@
 | 기능 | 파일 | 상태 |
 |---|---|---|
 | BUDGET rebalance | facade.py | 보류 (정책 복잡성) |
-| FIFO/HIFO lot method | facade.py | 보류 (AVGCOST 전용) |
+| FIFO/HIFO lot method | facade.py | **scope outside** (한국용 AVGCOST 전용) |
 | PENSION 계좌 | compile.py | 보류 (별도 세금) |
-| 종합과세 누진 | 미착수 | 보류 (설계 먼저) |
+| 종합과세 누진 | tax_engine.py | **✅ 구현 완료** |
 | Lane D FX 랜덤화 | synthetic.py | 보류 (preserve_fx=True) |
