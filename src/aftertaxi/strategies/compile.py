@@ -285,3 +285,60 @@ def compile_backtest_with_trace(payload: dict):
     trace = CompileTrace(input_intent_summary=summary, decisions=decisions)
 
     return config, trace
+
+
+def apply_suggestion_patch(base_payload: dict, patch: dict) -> dict:
+    """SuggestionPatch를 기존 payload에 안전하게 적용.
+
+    규칙:
+      1. _action=compare → payload 변경 없이 비교 의도만 반환
+      2. accounts patch → 기존 accounts에 merge (replace 아님)
+      3. strategy patch → 기존 strategy에 merge
+      4. 원본 payload 변형 금지
+
+    Returns: 새 payload (원본 불변)
+    """
+    import copy
+    result = copy.deepcopy(base_payload)
+
+    # compare action은 payload를 바꾸지 않음
+    if patch.get("_action") == "compare":
+        return result
+
+    # accounts patch: 기존 accounts에 필드 merge
+    if "accounts" in patch:
+        existing = result.get("accounts", [])
+        patch_accounts = patch["accounts"]
+
+        for pa in patch_accounts:
+            if "type" in pa:
+                # type이 있으면 해당 타입 계좌 찾아서 merge, 없으면 추가
+                matched = False
+                for ea in existing:
+                    if ea.get("type", "").upper() == pa["type"].upper():
+                        ea.update({k: v for k, v in pa.items()})
+                        matched = True
+                        break
+                if not matched:
+                    # 새 계좌 추가 — 기존 monthly 기본값
+                    new_acct = dict(pa)
+                    if "monthly_contribution" not in new_acct:
+                        # 기존 계좌들의 monthly 평균 사용
+                        avg = sum(a.get("monthly_contribution", 1000)
+                                  for a in existing) / max(1, len(existing))
+                        new_acct["monthly_contribution"] = avg
+                    existing.append(new_acct)
+            else:
+                # type 없으면 전체 계좌에 공통 적용
+                for ea in existing:
+                    ea.update({k: v for k, v in pa.items()})
+
+        result["accounts"] = existing
+
+    # strategy patch
+    if "strategy" in patch:
+        existing_strat = result.get("strategy", {})
+        existing_strat.update(patch["strategy"])
+        result["strategy"] = existing_strat
+
+    return result

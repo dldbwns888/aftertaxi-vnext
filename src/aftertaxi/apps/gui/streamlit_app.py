@@ -523,18 +523,24 @@ def main():
         if recent:
             st.divider()
             with st.expander(f"📜 최근 실행 ({len(recent)}건)", expanded=False):
-                rows = []
-                for r in recent:
-                    rows.append({
-                        "ID": r.run_id,
-                        "이름": r.name,
-                        "시간": r.timestamp,
-                        "세후배수": f"{r.net_pv_krw / max(1, r.n_months * 1000 * 1300):.2f}x" if r.n_months > 0 else "-",
-                        "MDD": f"{r.mdd:.0%}" if r.mdd != 0 else "-",
-                        "세금": f"₩{r.tax_assessed_krw:,.0f}" if r.tax_assessed_krw > 0 else "-",
-                        "판정": r.advisor_summary[:30] if r.advisor_summary else "-",
-                    })
-                st.dataframe(rows, use_container_width=True, hide_index=True)
+                for i, rec in enumerate(recent):
+                    mult = f"{rec.net_pv_krw / max(1, rec.n_months * 1000 * 1300):.2f}x" if rec.n_months > 0 else "-"
+                    mdd = f"{rec.mdd:.0%}" if rec.mdd != 0 else "-"
+                    col_info, col_btn = st.columns([5, 1])
+                    with col_info:
+                        st.markdown(
+                            f"**{rec.name}** · {rec.timestamp[:10]} · "
+                            f"{mult} · MDD {mdd} · "
+                            f"{rec.advisor_summary[:25] if rec.advisor_summary else ''}"
+                        )
+                    with col_btn:
+                        st.download_button(
+                            "📋", rec.config_json,
+                            file_name=f"{rec.name}.json",
+                            mime="application/json",
+                            key=f"replay_{i}",
+                            help="설정 다운로드 → '불러오기'로 재실행",
+                        )
     except Exception:
         pass
 

@@ -122,11 +122,47 @@ def main(argv=None):
     parser.add_argument("--watch", action="store_true", help="파일 변경 감지 → 자동 재실행")
     parser.add_argument("--compare", nargs="+", metavar="JSON",
                         help="비교할 추가 config (예: --compare b.json c.json)")
+    parser.add_argument("--history", action="store_true",
+                        help="최근 실행 기록 보기 (config 무시)")
 
     args = parser.parse_args(argv)
 
-    # 1. JSON 읽기
-    if args.config == "-":
+    # history 모드
+    if args.history:
+        try:
+            from aftertaxi.apps.memory import ResearchMemory
+            memory = ResearchMemory()
+            runs = memory.list_runs(limit=20)
+            if not runs:
+                print("실행 기록 없음.")
+                return
+            print(f"\n최근 실행 {len(runs)}건:")
+            print(f"  {'ID':<10} {'이름':<25} {'시간':<12} {'세후배수':>8} {'MDD':>6}")
+            print("  " + "-" * 65)
+            for r in runs:
+                mult = f"{r.net_pv_krw / max(1, r.n_months * 1000 * 1300):.2f}x" if r.n_months > 0 else "-"
+                mdd = f"{r.mdd:.0%}" if r.mdd != 0 else "-"
+                print(f"  {r.run_id:<10} {r.name:<25} {r.timestamp[:10]:<12} {mult:>8} {mdd:>6}")
+            print(f"\n다시 실행: aftertaxi replay:<run_id>")
+        except Exception as e:
+            print(f"기록 조회 실패: {e}")
+        return
+
+    # 1. JSON 읽기 (replay: 접두사 지원)
+    if args.config.startswith("replay:"):
+        run_id = args.config.split(":", 1)[1]
+        try:
+            from aftertaxi.apps.memory import ResearchMemory
+            rec = ResearchMemory().get(run_id)
+            if rec is None:
+                print(f"run_id '{run_id}' 없음. --history로 확인하세요.")
+                return
+            payload = json.loads(rec.config_json)
+            print(f"♻ replay: {rec.name} ({rec.timestamp[:10]})")
+        except Exception as e:
+            print(f"replay 실패: {e}")
+            return
+    elif args.config == "-":
         payload = json.load(sys.stdin)
     else:
         with open(args.config) as f:
@@ -163,6 +199,22 @@ def main(argv=None):
     # 4. 실행
     from aftertaxi.core.facade import run_backtest
     result = run_backtest(config, returns=returns, prices=prices, fx_rates=fx)
+
+    # 자동 기록
+    try:
+        from aftertaxi.apps.memory import ResearchMemory
+        name = Path(args.config).stem if args.config not in ("-",) and not args.config.startswith("replay:") else "cli"
+        ResearchMemory().record(
+            config_json=json.dumps(payload, ensure_ascii=False),
+            gross_pv_usd=result.gross_pv_usd,
+            net_pv_krw=result.net_pv_krw,
+            tax_assessed_krw=result.tax.total_assessed_krw,
+            mdd=result.mdd,
+            n_months=result.n_months,
+            name=f"{name} {result.n_months//12}yr",
+        )
+    except Exception:
+        pass
 
     # 5. 출력
     if args.json:
