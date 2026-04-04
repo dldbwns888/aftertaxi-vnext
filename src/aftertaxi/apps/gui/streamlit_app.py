@@ -432,6 +432,9 @@ def main():
             ret, pri, fx = market.returns, market.prices, market.fx
             st.info(f"📊 {market.source} | {market.n_months}개월 | "
                     f"{market.start_date:%Y-%m} ~ {market.end_date:%Y-%m}")
+            if ds == "synthetic":
+                st.warning("⚠ **합성 데이터**로 실행. 실제 시장과 다를 수 있습니다. "
+                           "실전 판단 전 실제 ETF 데이터(yfinance)로 재검증하세요.")
 
             r1 = run_backtest(cfg1, returns=ret, prices=pri, fx_rates=fx)
             a1 = build_attribution(r1)

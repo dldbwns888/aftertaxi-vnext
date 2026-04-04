@@ -297,8 +297,10 @@ def apply_suggestion_patch(base_payload: dict, patch: dict) -> dict:
       4. 원본 payload 변형 금지
 
     Returns: 새 payload (원본 불변)
+    Raises: warnings.warn() when auto-correcting
     """
     import copy
+    import warnings
     result = copy.deepcopy(base_payload)
 
     # compare action은 payload를 바꾸지 않음
@@ -312,7 +314,6 @@ def apply_suggestion_patch(base_payload: dict, patch: dict) -> dict:
 
         for pa in patch_accounts:
             if "type" in pa:
-                # type이 있으면 해당 타입 계좌 찾아서 merge, 없으면 추가
                 matched = False
                 for ea in existing:
                     if ea.get("type", "").upper() == pa["type"].upper():
@@ -320,16 +321,18 @@ def apply_suggestion_patch(base_payload: dict, patch: dict) -> dict:
                         matched = True
                         break
                 if not matched:
-                    # 새 계좌 추가 — 기존 monthly 기본값
                     new_acct = dict(pa)
                     if "monthly_contribution" not in new_acct:
-                        # 기존 계좌들의 monthly 평균 사용
                         avg = sum(a.get("monthly_contribution", 1000)
                                   for a in existing) / max(1, len(existing))
                         new_acct["monthly_contribution"] = avg
+                        warnings.warn(
+                            f"새 계좌 '{pa.get('type', '?')}'에 monthly 미지정 → "
+                            f"기존 평균 ${avg:,.0f} 자동 적용. 의도한 금액이 맞는지 확인하세요.",
+                            UserWarning, stacklevel=2,
+                        )
                     existing.append(new_acct)
             else:
-                # type 없으면 전체 계좌에 공통 적용
                 for ea in existing:
                     ea.update({k: v for k, v in pa.items()})
 
