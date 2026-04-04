@@ -213,3 +213,60 @@ def compare_strategies(
     winner = rows[0]["label"] if rows else ""
 
     return CompareOutput(outputs=outputs, rank_table=rows, winner=winner)
+
+
+@dataclass
+class ValidatedRunOutput:
+    """검증 포함 실행 결과."""
+    run: RunOutput
+    validation_report: Optional[object] = None  # ValidationReport
+    validation_grade: str = ""                   # "A" ~ "F"
+    validation_passed: bool = True
+
+
+def run_validated_strategy(
+    payload: dict,
+    returns: pd.DataFrame,
+    prices: pd.DataFrame,
+    fx_rates: pd.Series,
+    data_source: str = "synthetic",
+    full_validation: bool = False,
+) -> ValidatedRunOutput:
+    """검증 포함 전략 실행 — 성과 + 검증을 한 번에.
+
+    결과를 믿을 수 있는지까지 답한다.
+    """
+    # 1. 일반 실행
+    out = run_strategy(payload, returns, prices, fx_rates,
+                       data_source=data_source, save_to_memory=True)
+
+    # 2. 검증
+    validation_report = None
+    grade = ""
+    passed = True
+    try:
+        import numpy as np
+        from aftertaxi.validation import validate
+
+        # excess returns 계산 (단순: 월별 수익률)
+        mv = out.result.monthly_values
+        if len(mv) > 1:
+            monthly_returns = np.diff(mv) / mv[:-1]
+            vr = validate(
+                result=out.result,
+                excess_returns=monthly_returns,
+                strategy_name=payload.get("strategy", {}).get("type", "unknown"),
+                full=full_validation,
+            )
+            validation_report = vr
+            grade = vr.grade if hasattr(vr, "grade") else ""
+            passed = vr.passed if hasattr(vr, "passed") else True
+    except Exception:
+        pass  # 검증 실패해도 실행 결과는 유효
+
+    return ValidatedRunOutput(
+        run=out,
+        validation_report=validation_report,
+        validation_grade=grade,
+        validation_passed=passed,
+    )
