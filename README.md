@@ -102,4 +102,4 @@ pytest tests/ -q
 
 ## 라이선스
 
-Private research use.
+MIT License. 자유롭게 사용, 수정, 배포 가능.
