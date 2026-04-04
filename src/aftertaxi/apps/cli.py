@@ -199,7 +199,7 @@ def main(argv=None):
 
     # 5. 출력
     if args.json:
-        from aftertaxi.workbench import run_workbench_json
+        from aftertaxi.analysis import run_workbench_json
         print(run_workbench_json(
             [payload], returns=returns, prices=prices, fx_rates=fx,
         ))
@@ -230,19 +230,17 @@ def main(argv=None):
 
     # 6. Lane D (optional)
     if args.lane_d_compare or args.lane_d:
-        from aftertaxi.lanes.lane_d.synthetic import SyntheticMarketConfig
-
-        synth_config = SyntheticMarketConfig(
-            n_paths=args.lane_d_paths,
-            path_length_months=args.lane_d_years * 12,
-            seed=args.seed,
-            base_fx_rate=args.fx,
-            mode=args.lane_d_mode,
-        )
-
         if args.lane_d_compare:
-            # compare가 survival을 포함하는 상위 출력
+            # compare는 DCA vs Lump Sum 비교라 service 범위 밖 — 직접 호출 유지
+            from aftertaxi.lanes.lane_d.synthetic import SyntheticMarketConfig
             from aftertaxi.lanes.lane_d.compare import run_lane_d_comparison
+            synth_config = SyntheticMarketConfig(
+                n_paths=args.lane_d_paths,
+                path_length_months=args.lane_d_years * 12,
+                seed=args.seed,
+                base_fx_rate=args.fx,
+                mode=args.lane_d_mode,
+            )
             compare_report = run_lane_d_comparison(
                 source_returns=returns,
                 backtest_config=config,
@@ -252,12 +250,12 @@ def main(argv=None):
             print(compare_report.summary_text())
             print()
         else:
-            # 기존 survival only
-            from aftertaxi.lanes.lane_d.run import run_lane_d
-            lane_d_report = run_lane_d(
+            # survival only → service 경유
+            from aftertaxi.apps.service import run_lane_d as svc_lane_d
+            lane_d_report = svc_lane_d(
                 source_returns=returns,
-                backtest_config=config,
-                synthetic_config=synth_config,
+                backtest_payload=payload,
+                n_paths=args.lane_d_paths,
                 actual_result=result,
                 n_jobs=args.lane_d_jobs,
             )
@@ -266,9 +264,9 @@ def main(argv=None):
 
     # 7. 민감도 (optional)
     if args.sensitivity:
-        from aftertaxi.workbench.sensitivity import run_sensitivity
+        from aftertaxi.apps.service import run_sensitivity as svc_sensitivity
         print("민감도 분석 실행 중...")
-        grid = run_sensitivity(
+        grid = svc_sensitivity(
             strategy_payload=payload.get("strategy", {"type": "spy_bnh"}),
             n_months=n_months,
             fx_rate=args.fx,

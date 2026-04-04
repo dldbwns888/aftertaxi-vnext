@@ -46,6 +46,11 @@ class RunOutput:
     # memory
     run_id: str = ""
 
+    # 분석 결과 (GUI/CLI가 직접 계산하지 않도록 service에서 제공)
+    interpretation_text: str = ""               # analysis.interpret 결과
+    krw_attribution: Optional[object] = None    # KrwAttributionReport
+    tax_structure_report: Optional[object] = None  # TaxStructureReport
+
     # 하위호환 프로퍼티
     @property
     def data_source(self) -> str:
@@ -137,6 +142,26 @@ def run_strategy(
         notes="synthetic" if data_source == "synthetic" else "",
     )
 
+    # 5.5. 분석 결과 (GUI가 직접 계산하지 않도록)
+    interpretation_text = ""
+    krw_report = None
+    tax_report = None
+    try:
+        from aftertaxi.analysis.interpret import interpret_result
+        interpretation_text = interpret_result(result, attribution)
+    except Exception:
+        pass
+    try:
+        from aftertaxi.analysis.krw_attribution import build_krw_attribution
+        krw_report = build_krw_attribution(result)
+    except Exception:
+        pass
+    try:
+        from aftertaxi.analysis.tax_interpretation import interpret_tax_structure
+        tax_report = interpret_tax_structure(result, config)
+    except Exception:
+        pass
+
     # 6. Memory
     run_id = ""
     if save_to_memory:
@@ -169,6 +194,9 @@ def run_strategy(
         baseline_result=baseline_result,
         provenance=provenance,
         run_id=run_id,
+        interpretation_text=interpretation_text,
+        krw_attribution=krw_report,
+        tax_structure_report=tax_report,
     )
 
 
@@ -178,6 +206,7 @@ class CompareOutput:
     outputs: List[RunOutput]
     rank_table: List[Dict]
     winner: str
+    comparison_report: Optional[object] = None  # analysis.compare.ComparisonReport
 
 
 def compare_strategies(
@@ -191,6 +220,7 @@ def compare_strategies(
     """여러 전략 비교 — 서비스 레이어.
 
     payloads와 labels는 같은 길이. 같은 데이터로 전부 실행 후 순위.
+    analysis.compare를 내부적으로 사용하여 통계 검정까지 수행.
     """
     outputs = []
     for payload in payloads:
@@ -199,20 +229,20 @@ def compare_strategies(
                            run_baseline=False)
         outputs.append(out)
 
-    # 순위 테이블
-    rows = []
-    for label, out in zip(labels, outputs):
-        rows.append({
-            "label": label,
-            "mult_after_tax": out.result.mult_after_tax,
-            "mdd": out.result.mdd,
-            "tax_drag_pct": out.attribution.tax_drag_pct,
-        })
+    # analysis.compare로 풍부한 비교 리포트 생성
+    from aftertaxi.analysis.compare import compare_strategies as _compare_analysis
+    engine_results = [out.result for out in outputs]
+    comparison_report = _compare_analysis(engine_results, names=labels)
 
-    rows.sort(key=lambda r: r["mult_after_tax"], reverse=True)
-    winner = rows[0]["label"] if rows else ""
+    rank_table = comparison_report.rank_table()
+    winner = comparison_report.winner
 
-    return CompareOutput(outputs=outputs, rank_table=rows, winner=winner)
+    return CompareOutput(
+        outputs=outputs,
+        rank_table=rank_table,
+        winner=winner,
+        comparison_report=comparison_report,
+    )
 
 
 @dataclass
@@ -321,4 +351,92 @@ def run_validated_strategy(
         validation_grade=grade,
         validation_passed=passed,
         advisor_v2=advisor_v2_report,
+    )
+
+
+# ══════════════════════════════════════════════
+# 분석 서비스 (GUI/CLI가 직접 호출하던 것을 흡수)
+# ══════════════════════════════════════════════
+
+def run_tax_savings(
+    strategy_payload: dict,
+    total_monthly: float,
+    isa_ratio: float,
+    returns: pd.DataFrame,
+    prices: pd.DataFrame,
+    fx_rates: pd.Series,
+    n_months: Optional[int] = None,
+):
+    """ISA 절세 시뮬레이션 — 서비스 레이어.
+
+    Returns
+    -------
+    TaxSavingsReport
+    """
+    from aftertaxi.analysis.tax_savings import simulate_tax_savings
+    return simulate_tax_savings(
+        strategy_payload=strategy_payload,
+        total_monthly=total_monthly,
+        isa_ratio=isa_ratio,
+        returns=returns,
+        prices=prices,
+        fx_rates=fx_rates,
+        n_months=n_months,
+    )
+
+
+def run_sensitivity(
+    strategy_payload: dict,
+    n_months: int = 240,
+    fx_rate: float = 1300.0,
+    seed: int = 42,
+    growth_range: Optional[List[float]] = None,
+    vol_range: Optional[List[float]] = None,
+):
+    """민감도 히트맵 — 서비스 레이어.
+
+    Returns
+    -------
+    SensitivityGrid
+    """
+    from aftertaxi.analysis.sensitivity import run_sensitivity as _sens
+    return _sens(
+        strategy_payload=strategy_payload,
+        growth_range=growth_range,
+        vol_range=vol_range,
+        n_months=n_months,
+        fx_rate=fx_rate,
+        seed=seed,
+    )
+
+
+def run_lane_d(
+    source_returns: pd.DataFrame,
+    backtest_payload: dict,
+    n_paths: int = 100,
+    actual_result=None,
+    n_jobs: int = 1,
+):
+    """Lane D 합성 장기 생존 시뮬레이션 — 서비스 레이어.
+
+    payload를 받아서 compile까지 처리한 뒤 lane_d에 넘긴다.
+    앱은 compile을 직접 만질 필요 없음.
+
+    Returns
+    -------
+    SyntheticSurvivalReport
+    """
+    from aftertaxi.strategies.compile import compile_backtest
+    from aftertaxi.lanes.lane_d.run import run_lane_d as _lane_d
+    from aftertaxi.lanes.lane_d.synthetic import SyntheticMarketConfig
+
+    config = compile_backtest(backtest_payload)
+    synthetic_config = SyntheticMarketConfig(n_paths=n_paths)
+
+    return _lane_d(
+        source_returns=source_returns,
+        backtest_config=config,
+        synthetic_config=synthetic_config,
+        actual_result=actual_result,
+        n_jobs=n_jobs,
     )

@@ -16,9 +16,6 @@ import streamlit as st
 
 from aftertaxi.strategies.metadata import get_metadata, list_metadata, ParamSchema
 from aftertaxi.apps.gui.draft_models import StrategyDraft, AccountDraft, BacktestDraft
-from aftertaxi.strategies.compile import compile_backtest
-from aftertaxi.core.facade import run_backtest
-from aftertaxi.core.attribution import build_attribution
 
 
 # ══════════════════════════════════════════════
@@ -72,14 +69,15 @@ def _load_data(source, assets, s):
 # Advisor 카드
 # ══════════════════════════════════════════════
 
-def _render_advisor_card(result, attribution, config, baseline_result=None):
-    """Advisor 진단 + 제안 + 원클릭 다음 실험 버튼."""
-    from aftertaxi.advisor.builder import build_advisor_input
-    from aftertaxi.advisor.rules import run_advisor
+def _render_advisor_card(report):
+    """Advisor 진단 + 제안 + 원클릭 다음 실험 버튼.
 
-    inp = build_advisor_input(result, attribution, config,
-                              baseline_result=baseline_result)
-    report = run_advisor(inp)
+    Parameters
+    ----------
+    report : AdvisorReport
+        service.run_strategy()가 반환한 RunOutput.advisor_report를 그대로 전달.
+        GUI는 렌더링만 한다. advisor를 직접 실행하지 않는다.
+    """
 
     if report.n_critical > 0:
         st.error(f"⚠ {report.summary}")
@@ -161,7 +159,7 @@ def _render_tax_timeline(result):
 
 def _render_asset_contribution(weights, prices, invested_usd):
     """자산별 기여 분해 차트."""
-    from aftertaxi.workbench.analytics import build_asset_contribution
+    from aftertaxi.analysis.analytics import build_asset_contribution
     contribs = build_asset_contribution(weights, prices, invested_usd)
     if not contribs:
         return
@@ -176,7 +174,7 @@ def _render_asset_contribution(weights, prices, invested_usd):
 
 def _render_underwater(monthly_values):
     """Underwater (drawdown) 차트."""
-    from aftertaxi.workbench.analytics import build_underwater
+    from aftertaxi.analysis.analytics import build_underwater
     uw = build_underwater(monthly_values)
     if len(uw.drawdown) == 0:
         return
@@ -187,21 +185,34 @@ def _render_underwater(monthly_values):
     st.caption(f"최대 낙폭: {uw.max_drawdown:.1%} / 최장 회복: {uw.max_recovery_months}개월")
 
 
-def _render_comparison(r1, r2, l1, l2):
-    from aftertaxi.workbench.compare import compare_strategies
-    report = compare_strategies([r1, r2], [l1, l2])
+def _render_comparison(compare_output):
+    """비교 결과 렌더링. service.compare_strategies() 반환값을 그대로 사용.
+
+    GUI는 렌더링만. 비교 계산은 service가 소유.
+    """
+    report = compare_output.comparison_report
+    outputs = compare_output.outputs
+    labels = [row["name"] for row in compare_output.rank_table]
+
+    l1, l2 = labels[0] if len(labels) > 0 else "A", labels[1] if len(labels) > 1 else "B"
+    # rank_table에서 이미 정렬돼있을 수 있으므로 원본 순서 복원
+    l1 = outputs[0].config.strategy.name if hasattr(outputs[0].config.strategy, "name") else "전략1"
+    l2 = outputs[1].config.strategy.name if hasattr(outputs[1].config.strategy, "name") else "전략2"
+
     st.subheader(f"{l1} vs {l2}")
     table = report.rank_table()
     df = pd.DataFrame(table)
     df.columns = ["순위", "전략", "세전", "세후", "MDD", "drag%", "Sharpe"]
     st.dataframe(df, hide_index=True, use_container_width=True)
 
+    r1 = outputs[0].result
+    r2 = outputs[1].result
     mx = max(len(r1.monthly_values), len(r2.monthly_values))
     pv1 = np.pad(r1.monthly_values, (0, mx - len(r1.monthly_values)), constant_values=np.nan)
     pv2 = np.pad(r2.monthly_values, (0, mx - len(r2.monthly_values)), constant_values=np.nan)
     st.line_chart(pd.DataFrame({l1: pv1, l2: pv2}, index=range(1, mx + 1)),
                   use_container_width=True)
-    st.info(f"세후 우승: **{report.winner}**")
+    st.info(f"세후 우승: **{compare_output.winner}**")
 
 
 # ══════════════════════════════════════════════
@@ -411,13 +422,15 @@ def main():
         all_assets = list(payload.get("strategy", {}).get("weights", {"SPY": 1}).keys())
 
         # compare용 추가 자산
-        cfg2, out2 = None, None
+        compare_output = None
+        payload2 = None
         if compare_mode and key2:
             d2 = BacktestDraft(strategy=StrategyDraft(type=key2, params=params2),
                                accounts=accounts, n_months=state.get("n_months"))
-            from aftertaxi.strategies.compile import compile_backtest
-            cfg2 = compile_backtest(d2.to_dict())
-            all_assets = list(set(all_assets) | set(cfg2.strategy.weights.keys()))
+            payload2 = d2.to_dict()
+            # 자산셋 합치기 (데이터 로드 전에 필요)
+            assets2 = list(payload2.get("strategy", {}).get("weights", {}).keys())
+            all_assets = list(set(all_assets) | set(assets2))
 
         with st.spinner("실행 중..."):
             try:
@@ -434,14 +447,17 @@ def main():
                            "실전 판단 전 실제 ETF 데이터(yfinance)로 재검증하세요.")
 
             # 메인 실행 (서비스 레이어)
-            out = run_strategy(payload, ret, pri, fx, data_source=ds)
-
-            # compare 실행
-            if cfg2:
-                from aftertaxi.core.facade import run_backtest
-                from aftertaxi.core.attribution import build_attribution
-                r2 = run_backtest(cfg2, returns=ret, prices=pri, fx_rates=fx)
-                a2 = build_attribution(r2)
+            if compare_mode and payload2:
+                # 비교 모드: service.compare_strategies 경유
+                from aftertaxi.apps.service import compare_strategies as svc_compare
+                compare_output = svc_compare(
+                    [payload, payload2],
+                    [key1.upper(), key2.upper()],
+                    ret, pri, fx, data_source=ds,
+                )
+                out = compare_output.outputs[0]
+            else:
+                out = run_strategy(payload, ret, pri, fx, data_source=ds)
 
         # CompileTrace 카드
         with st.expander("📋 이렇게 이해했습니다", expanded=is_beginner):
@@ -457,19 +473,24 @@ def main():
         # 결과 표시
         # ══════════════════════════════════════
 
-        if r2:
-            # ── 비교 모드 ──
+        if compare_output:
+            # ── 비교 모드 ── (service.compare_strategies 경유)
+            out1_cmp = compare_output.outputs[0]
+            out2_cmp = compare_output.outputs[1]
+            r2 = out2_cmp.result
+            a2 = out2_cmp.attribution
+
             t_cmp, t_s1, t_s2, t_tax = st.tabs([
                 "비교", key1.upper(), key2.upper(), "세금"])
             with t_cmp:
-                _render_comparison(r1, r2, key1.upper(), key2.upper())
+                _render_comparison(compare_output)
             with t_s1:
                 _render_summary(r1, a1)
-                _render_advisor_card(r1, a1, cfg1, baseline_result=r_baseline)
+                _render_advisor_card(out1_cmp.advisor_report)
                 _render_enhanced_chart(r1, total_mo)
             with t_s2:
                 _render_summary(r2, a2)
-                _render_advisor_card(r2, a2, cfg2, baseline_result=r_baseline)
+                _render_advisor_card(out2_cmp.advisor_report)
                 _render_enhanced_chart(r2, total_mo)
             with t_tax:
                 c1, c2 = st.columns(2)
@@ -495,12 +516,12 @@ def main():
                     st.info(f"📊 SPY 단순 적립과 유사한 성과 (차이 {gap:+.2f}x)")
 
             # 해석 한 줄
-            from aftertaxi.workbench.interpret import interpret_result
-            st.markdown(interpret_result(r1, a1))
+            if out.interpretation_text:
+                st.markdown(out.interpretation_text)
 
             st.divider()
             # Advisor 카드 (baseline 전달)
-            _render_advisor_card(r1, a1, cfg1, baseline_result=r_baseline)
+            _render_advisor_card(out.advisor_report)
 
             st.divider()
             st.subheader("포트폴리오 성장")
@@ -515,10 +536,10 @@ def main():
             with t_res:
                 _render_summary(r1, a1)
                 st.divider()
-                _render_advisor_card(r1, a1, cfg1, baseline_result=r_baseline)
+                _render_advisor_card(out.advisor_report)
                 st.divider()
-                from aftertaxi.workbench.interpret import interpret_result
-                st.markdown(interpret_result(r1, a1))
+                if out.interpretation_text:
+                    st.markdown(out.interpretation_text)
                 st.subheader("세금 분해")
                 tc = st.columns(3)
                 tc[0].metric("양도세", f"₩{sum(a.capital_gains_tax_krw for a in r1.accounts):,.0f}")
@@ -542,8 +563,8 @@ def main():
                 isa_ratio = st.slider("ISA 비중", 0.0, 0.8, 0.3, 0.1, key="isa_sim")
                 if st.button("절세 시뮬레이션", key="isa_btn"):
                     with st.spinner("ISA 시뮬레이션..."):
-                        from aftertaxi.workbench.tax_savings import simulate_tax_savings
-                        ts = simulate_tax_savings(
+                        from aftertaxi.apps.service import run_tax_savings
+                        ts = run_tax_savings(
                             strategy_payload={"type": key1},
                             total_monthly=total_mo, isa_ratio=isa_ratio,
                             returns=ret, prices=pri, fx_rates=fx)
@@ -556,8 +577,8 @@ def main():
                 st.subheader("민감도 히트맵")
                 if st.button("민감도 분석", key="sens_btn"):
                     with st.spinner("25개 시나리오..."):
-                        from aftertaxi.workbench.sensitivity import run_sensitivity
-                        grid = run_sensitivity(
+                        from aftertaxi.apps.service import run_sensitivity as svc_sensitivity
+                        grid = svc_sensitivity(
                             strategy_payload={"type": key1},
                             n_months=state.get("n_months", 240),
                             fx_rate=state.get("fx_rate", 1300.0),
