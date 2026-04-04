@@ -69,6 +69,8 @@ class AccountDraft:
     priority: Optional[int] = None
     annual_cap: Optional[float] = None
     allowed_assets: Optional[List[str]] = None
+    rebalance_mode: Optional[str] = None  # "CONTRIBUTION_ONLY", "BAND", "FULL"
+    band_threshold_pct: Optional[float] = None
 
     def validate(self) -> List[str]:
         errors = []
@@ -90,6 +92,10 @@ class AccountDraft:
             d["annual_cap"] = self.annual_cap
         if self.allowed_assets is not None:
             d["allowed_assets"] = self.allowed_assets
+        if self.rebalance_mode is not None:
+            d["rebalance_mode"] = self.rebalance_mode
+        if self.band_threshold_pct is not None:
+            d["band_threshold_pct"] = self.band_threshold_pct
         return d
 
 

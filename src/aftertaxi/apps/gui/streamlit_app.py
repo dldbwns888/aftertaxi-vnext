@@ -195,22 +195,87 @@ def main():
         st.header("전략")
 
         if is_beginner:
-            # 초보자: 템플릿만
-            templates = {
-                "SPY 100% (미국 대형주)": "spy_bnh",
-                "QQQ+SSO 6:4 (나스닥 레버리지)": "q60s40",
-            }
-            # metadata에 있는 것만 필터
-            valid_templates = {k: v for k, v in templates.items()
-                               if v in strategy_options.values()}
-            if not valid_templates:
-                valid_templates = {list(strategy_options.keys())[0]:
-                                   list(strategy_options.values())[0]}
-            label1 = st.selectbox("전략 템플릿", list(valid_templates.keys()))
-            key1 = valid_templates[label1]
-            params1 = {}
+            # ── 전략 빌더 Wizard ──
+
+            # Step 1: 투자 스타일
+            style = st.radio("투자 스타일",
+                             ["🛡 안전형", "⚖ 균형형", "🚀 공격형", "🔧 직접 구성"],
+                             horizontal=True)
+
+            # Step 2: 전략 매칭
+            if style == "🛡 안전형":
+                key1 = "spy_bnh"
+                st.caption("SPY 100% — 미국 대형주 장기 적립. 가장 단순하고 검증된 전략.")
+            elif style == "⚖ 균형형":
+                key1 = "6040"
+                st.caption("SPY 60% + TLT 40% — 주식+채권 전통 배분. 변동성 완화.")
+            elif style == "🚀 공격형":
+                key1 = "q60s40"
+                st.caption("QQQ 60% + SSO 40% — 나스닥+레버리지. 높은 성장, 높은 변동성.")
+            else:
+                # 직접 구성: 2자산
+                st.caption("자산 2개를 골라 비중을 정합니다.")
+                asset_options = ["SPY", "QQQ", "SSO", "TLT", "VXUS", "GLDM"]
+                c1, c2 = st.columns(2)
+                a1 = c1.selectbox("자산 1", asset_options, index=0, key="ba1")
+                a2 = c2.selectbox("자산 2", asset_options, index=1, key="ba2")
+                w1 = st.slider(f"{a1} 비중", 10, 90, 60, 10, key="bw1")
+                key1 = "custom"
+                params1 = {"weights": {a1: w1 / 100, a2: (100 - w1) / 100}}
+
+            if style != "🔧 직접 구성":
+                params1 = {}
+
             compare_mode = False
             key2, params2 = None, {}
+
+            st.divider()
+
+            # Step 3: 계좌
+            acct_rule = st.radio("계좌 규칙",
+                                 ["ISA 우선 (절세 최적)", "일반계좌만", "ISA/일반 분배"],
+                                 horizontal=False)
+            monthly = st.number_input("월 납입 (USD)", min_value=100, value=1000, step=100)
+
+            if acct_rule == "ISA 우선 (절세 최적)":
+                accounts = [
+                    AccountDraft(type="ISA", monthly=float(monthly), priority=0),
+                    AccountDraft(type="TAXABLE", monthly=0, priority=1),
+                ]
+                st.caption("💡 ISA에 전액 납입 (연 한도 ₩2,000만). "
+                           "초과분은 고급 모드에서 분배 설정 가능.")
+            elif acct_rule == "일반계좌만":
+                accounts = [AccountDraft(type="TAXABLE", monthly=float(monthly), priority=0)]
+            else:
+                isa_pct = st.slider("ISA 비중", 10, 90, 50, 10, key="isa_split")
+                isa_mo = float(monthly) * isa_pct / 100
+                tax_mo = float(monthly) - isa_mo
+                accounts = [
+                    AccountDraft(type="ISA", monthly=isa_mo, priority=0),
+                    AccountDraft(type="TAXABLE", monthly=tax_mo, priority=1),
+                ]
+                st.caption(f"ISA ${isa_mo:,.0f}/월 + 일반 ${tax_mo:,.0f}/월")
+
+            st.divider()
+
+            # Step 4: 리밸런싱
+            rebal = st.radio("리밸런싱",
+                             ["적립만 (매도 없음)", "괴리 클 때만 (BAND 5%)", "매월 전체"],
+                             horizontal=False)
+            if rebal == "괴리 클 때만 (BAND 5%)":
+                for a in accounts:
+                    a.rebalance_mode = "BAND"
+            elif rebal == "매월 전체":
+                for a in accounts:
+                    a.rebalance_mode = "FULL"
+
+            st.divider()
+
+            # Step 5: 기간
+            years = st.slider("투자 기간 (년)", 5, 30, 20)
+            state = {"n_months": years * 12, "fx_rate": 1300.0, "growth": 0.08,
+                     "vol": 0.16, "seed": 42}
+            ds = "synthetic"
         else:
             # 고급: 전체 기능
             compare_mode = st.toggle("비교 모드")
@@ -232,19 +297,7 @@ def main():
         st.divider()
         st.header("계좌")
 
-        if is_beginner:
-            use_isa = st.checkbox("ISA 계좌 사용 (절세 효과)", value=True)
-            monthly = st.number_input("월 납입 (USD)", min_value=100, value=1000, step=100)
-            if use_isa:
-                accounts = [
-                    AccountDraft(type="ISA", monthly=float(monthly), priority=0),
-                    AccountDraft(type="TAXABLE", monthly=0, priority=1),
-                ]
-                st.caption("💡 ISA에 전액 납입합니다 (연 한도 ₩2,000만). "
-                           "한도 초과분 자동 overflow는 고급 모드에서 2계좌 설정으로 가능합니다.")
-            else:
-                accounts = [AccountDraft(type="TAXABLE", monthly=float(monthly), priority=0)]
-        else:
+        if not is_beginner:
             n_accts = st.radio("계좌 수", [1, 2], horizontal=True)
             accounts = []
             for i in range(n_accts):
@@ -257,12 +310,7 @@ def main():
         st.divider()
         st.header("데이터")
 
-        if is_beginner:
-            ds = "synthetic"
-            state = {"n_months": 240, "fx_rate": 1300.0, "growth": 0.08,
-                     "vol": 0.16, "seed": 42}
-            state["n_months"] = st.slider("기간 (년)", 5, 30, 20) * 12
-        else:
+        if not is_beginner:
             ds_labels = {
                 "synthetic": "합성 (빠른 아이디어 검토)",
                 "yfinance": "실제 ETF (환율 고정)",
