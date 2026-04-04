@@ -129,3 +129,46 @@ def run_strategy(
         data_fingerprint=fp,
         run_id=run_id,
     )
+
+
+@dataclass
+class CompareOutput:
+    """비교 결과."""
+    outputs: List[RunOutput]
+    rank_table: List[Dict]
+    winner: str
+
+
+def compare_strategies(
+    payloads: List[dict],
+    labels: List[str],
+    returns: pd.DataFrame,
+    prices: pd.DataFrame,
+    fx_rates: pd.Series,
+    data_source: str = "synthetic",
+) -> CompareOutput:
+    """여러 전략 비교 — 서비스 레이어.
+
+    payloads와 labels는 같은 길이. 같은 데이터로 전부 실행 후 순위.
+    """
+    outputs = []
+    for payload in payloads:
+        out = run_strategy(payload, returns, prices, fx_rates,
+                           data_source=data_source, save_to_memory=False,
+                           run_baseline=False)
+        outputs.append(out)
+
+    # 순위 테이블
+    rows = []
+    for label, out in zip(labels, outputs):
+        rows.append({
+            "label": label,
+            "mult_after_tax": out.result.mult_after_tax,
+            "mdd": out.result.mdd,
+            "tax_drag_pct": out.attribution.tax_drag_pct,
+        })
+
+    rows.sort(key=lambda r: r["mult_after_tax"], reverse=True)
+    winner = rows[0]["label"] if rows else ""
+
+    return CompareOutput(outputs=outputs, rank_table=rows, winner=winner)
