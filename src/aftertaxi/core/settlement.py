@@ -36,24 +36,26 @@ def settle_year_end(
     fx_rate: float,
     enable_health_insurance: bool = False,
 ) -> None:
-    """연도 전환 시 정산.
+    """연도 전환 시 정산. settlement가 계산을 중재.
 
     순서:
-      1. [Account] 양도소득세 정산
-      2. [Person]  건보료용 연간 배당소득 스냅샷 (배당세 리셋 전에 캡처)
-      3. [Account] 배당소득세 정산 (annual_dividend 리셋)
-      4. [Person]  건강보험료 (배당소득 기반, opt-in)
+      1. [Account] 양도소득세: get → compute → apply
+      2. [Person]  건보료용 연간 배당소득 스냅샷
+      3. [Account] 배당소득세: get → compute → apply
+      4. [Person]  건강보험료
       5. [Account] 세금 납부
-
-    건보료 법적 근거: 시행령 제41조 — 양도소득은 소득월액 산정 대상 아님.
     """
-    from aftertaxi.core.tax_engine import compute_health_insurance
+    from aftertaxi.core.tax_engine import (
+        compute_capital_gains_tax, compute_dividend_tax, compute_health_insurance,
+    )
 
-    # 1. 양도소득세 정산
+    # 1. 양도소득세 — settlement가 중재
     for ledger in ledgers.values():
-        ledger.settle_annual_tax(current_year=year)
+        inputs = ledger.get_cgt_inputs(year)
+        result = compute_capital_gains_tax(**inputs)
+        ledger.apply_cgt_result(result)
 
-    # 2. 건보료용 배당소득 스냅샷 (settle_dividend_tax가 리셋하기 전에 캡처)
+    # 2. 건보료용 배당소득 스냅샷
     annual_div_krw = 0.0
     if enable_health_insurance:
         annual_div_krw = sum(
@@ -62,15 +64,19 @@ def settle_year_end(
             if l.account_type == _TAXABLE
         )
 
-    # 3. 배당소득세 정산 (annual_dividend 리셋)
+    # 3. 배당소득세 — settlement가 중재
     for ledger in ledgers.values():
         if ledger.account_type == _TAXABLE:
-            ledger.settle_dividend_tax(fx_rate)
+            if ledger.annual_dividend_gross_usd >= 1e-8:
+                inputs = ledger.get_dividend_tax_inputs(fx_rate)
+                result = compute_dividend_tax(**inputs)
+                ledger.apply_dividend_tax_result(result)
+            else:
+                # 배당 없어도 카운터 리셋
+                ledger.annual_dividend_gross_usd = 0.0
+                ledger.annual_dividend_withholding_usd = 0.0
 
-    # 4. 건보료 (배당소득 기반, person scope)
-    # ⚠ MVP 한계: person-scope premium을 첫 번째 TAXABLE 계좌에 전액 귀속.
-    #   멀티 TAXABLE 계좌일 때 계좌별 attribution이 왜곡될 수 있음.
-    #   향후: 배당소득 비례 배분 또는 별도 person-level liability 필드.
+    # 4. 건보료
     if enable_health_insurance:
         hi_result = compute_health_insurance(dividend_income_krw=annual_div_krw)
         if hi_result.premium_krw > 0:
@@ -91,23 +97,28 @@ def settle_final(
     fx_rate: float,
     enable_health_insurance: bool = False,
 ) -> None:
-    """최종 청산 시 정산.
+    """최종 청산 시 정산. settlement가 계산을 중재.
 
     순서:
-      1. [Account] 전량 청산 → 양도세
+      1. [Account] 전량 청산 → 양도세 (get → compute → apply)
       2. [Person]  건보료용 배당소득 스냅샷
-      3. [Account] 배당세 → ISA
+      3. [Account] 배당세 + ISA (get → compute → apply)
       4. [Person]  건보료
       5. [Account] 납부 + 기록
     """
-    from aftertaxi.core.tax_engine import compute_health_insurance
+    from aftertaxi.core.tax_engine import (
+        compute_capital_gains_tax, compute_dividend_tax,
+        compute_isa_settlement, compute_health_insurance,
+    )
 
     # Pass 1: 청산 + 양도세
     for ledger in ledgers.values():
         ledger.liquidate(price_map, fx_rate)
-        ledger.settle_annual_tax(current_year=year)
+        inputs = ledger.get_cgt_inputs(year)
+        result = compute_capital_gains_tax(**inputs)
+        ledger.apply_cgt_result(result)
 
-    # 건보료용 배당소득 스냅샷 (배당세 리셋 전)
+    # 건보료용 배당소득 스냅샷
     annual_div_krw = 0.0
     if enable_health_insurance:
         annual_div_krw = sum(
@@ -119,11 +130,19 @@ def settle_final(
     # Pass 2: 배당세 + ISA
     for ledger in ledgers.values():
         if ledger.account_type == _TAXABLE:
-            ledger.settle_dividend_tax(fx_rate)
+            if ledger.annual_dividend_gross_usd >= 1e-8:
+                inputs = ledger.get_dividend_tax_inputs(fx_rate)
+                result = compute_dividend_tax(**inputs)
+                ledger.apply_dividend_tax_result(result)
+            else:
+                ledger.annual_dividend_gross_usd = 0.0
+                ledger.annual_dividend_withholding_usd = 0.0
         if ledger.isa_exempt_limit > 0:
-            ledger.settle_isa()
+            isa_inputs = ledger.get_isa_inputs()
+            isa_result = compute_isa_settlement(**isa_inputs)
+            ledger.apply_isa_result(isa_result)
 
-    # Pass 3: 건보료 (person scope → 첫 TAXABLE에 귀속, MVP 한계)
+    # Pass 3: 건보료
     if enable_health_insurance:
         hi_result = compute_health_insurance(dividend_income_krw=annual_div_krw)
         if hi_result.premium_krw > 0:

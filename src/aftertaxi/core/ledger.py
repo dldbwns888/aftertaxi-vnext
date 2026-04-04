@@ -291,14 +291,18 @@ class AccountLedger:
     # ── 세금 정산 ──
 
     def settle_annual_tax(self, current_year: int = 0) -> float:
-        """연말 세금 정산. tax_engine에 위임 → 결과 적용.
+        """연말 양도세 정산. get → compute → apply 패턴.
 
-        ledger는 '왜 이 세금인지' 모른다.
-        tax_engine이 계산하고, ledger는 결과를 적용할 뿐.
+        직접 호출 시 하위 호환 유지 (settlement 경유 권장).
         """
         from aftertaxi.core.tax_engine import compute_capital_gains_tax
+        inputs = self.get_cgt_inputs(current_year)
+        result = compute_capital_gains_tax(**inputs)
+        return self.apply_cgt_result(result)
 
-        result = compute_capital_gains_tax(
+    def get_cgt_inputs(self, current_year: int = 0) -> dict:
+        """양도세 계산에 필요한 입력. settlement가 사용."""
+        return dict(
             realized_gain_krw=self.annual_realized_gain_krw,
             realized_loss_krw=self.annual_realized_loss_krw,
             carryforward=self.loss_carryforward_krw,
@@ -309,7 +313,8 @@ class AccountLedger:
             progressive_threshold=self.progressive_threshold,
         )
 
-        # 상태 갱신 (결과 적용만)
+    def apply_cgt_result(self, result) -> float:
+        """양도세 계산 결과 적용. settlement가 사용."""
         self._total_tax_assessed_krw += result.tax_krw
         self._capital_gains_tax_assessed_krw += result.tax_krw
         self.unpaid_tax_liability_krw += result.tax_krw
@@ -318,6 +323,11 @@ class AccountLedger:
         )
         self.annual_realized_gain_krw = 0.0
         self.annual_realized_loss_krw = 0.0
+
+        self._log("tax_assessed", amount_krw=result.tax_krw,
+                  metadata={"taxable_base": result.taxable_base_krw,
+                            "exemption_used": result.exemption_used_krw})
+        return result.tax_krw
         # NOTE: annual_dividend_*는 settle_dividend_tax()에서 리셋 (순서 의존)
 
         self._log("tax_assessed", amount_krw=result.tax_krw,
@@ -328,20 +338,25 @@ class AccountLedger:
     # ── ISA 만기 정산 ──
 
     def settle_isa(self) -> float:
-        """ISA 만기: tax_engine에 위임 → 결과 적용."""
+        """ISA 만기 정산. get → compute → apply 패턴."""
         if self.isa_exempt_limit <= 0:
             return 0.0
-
         from aftertaxi.core.tax_engine import compute_isa_settlement
+        inputs = self.get_isa_inputs()
+        result = compute_isa_settlement(**inputs)
+        return self.apply_isa_result(result)
 
-        result = compute_isa_settlement(
+    def get_isa_inputs(self) -> dict:
+        """ISA 정산 입력. settlement가 사용."""
+        return dict(
             cumulative_gain_krw=self.cumulative_realized_gain_krw,
             cumulative_loss_krw=self.cumulative_realized_loss_krw,
             exempt_limit=self.isa_exempt_limit,
             excess_rate=self.isa_excess_rate,
         )
 
-        # 상태 갱신 (결과 적용만)
+    def apply_isa_result(self, result) -> float:
+        """ISA 정산 결과 적용."""
         self._total_tax_assessed_krw += result.tax_krw
         self.unpaid_tax_liability_krw += result.tax_krw
         self._log("isa_settlement", amount_krw=result.tax_krw,
@@ -353,23 +368,24 @@ class AccountLedger:
     # ── 배당소득세 정산 ──
 
     def settle_dividend_tax(self, fx_rate: float) -> float:
-        """연간 배당소득세 정산. tax_engine에 위임 → 결과 적용.
-
-        종합과세 기준(2천만원) 미만: 해외 원천징수로 종결, 추가 세금 0.
-        종합과세 초과: 국내 세율 적용 − 외국납부세액공제 = 추가 세금.
-        """
+        """연간 배당소득세 정산. get → compute → apply 패턴."""
         if self.annual_dividend_gross_usd < 1e-8:
             return 0.0
-
         from aftertaxi.core.tax_engine import compute_dividend_tax
+        inputs = self.get_dividend_tax_inputs(fx_rate)
+        result = compute_dividend_tax(**inputs)
+        return self.apply_dividend_tax_result(result)
 
-        result = compute_dividend_tax(
+    def get_dividend_tax_inputs(self, fx_rate: float) -> dict:
+        """배당세 계산 입력. settlement가 사용."""
+        return dict(
             annual_dividend_gross_usd=self.annual_dividend_gross_usd,
             annual_withholding_usd=self.annual_dividend_withholding_usd,
             fx_rate=fx_rate,
         )
 
-        # 추가 세금만 부과 (원천징수는 이미 차감됨)
+    def apply_dividend_tax_result(self, result) -> float:
+        """배당세 결과 적용."""
         if result.additional_tax_krw > 0:
             self._total_tax_assessed_krw += result.additional_tax_krw
             self._dividend_tax_assessed_krw += result.additional_tax_krw
@@ -381,10 +397,9 @@ class AccountLedger:
                             "is_comprehensive": result.is_comprehensive,
                             "foreign_credit": result.foreign_tax_credit_krw})
 
-        # 연간 배당 카운터 리셋 (이 함수가 소유)
+        # 연간 배당 카운터 리셋
         self.annual_dividend_gross_usd = 0.0
         self.annual_dividend_withholding_usd = 0.0
-
         return result.additional_tax_krw
 
     # ── 건강보험료 적용 ──
