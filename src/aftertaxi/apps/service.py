@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from aftertaxi.core.attribution import ResultAttribution
     from aftertaxi.intent.plan import CompileTrace
     from aftertaxi.advisor.types import AdvisorReport
+    from aftertaxi.experiments.fingerprint import DataProvenance
 
 
 @dataclass
@@ -39,14 +40,21 @@ class RunOutput:
     # baseline (있으면)
     baseline_result: Optional[EngineResult] = None
 
-    # provenance
-    data_source: str = ""
-    data_fingerprint: str = ""
+    # provenance (구조적 추적)
+    provenance: Optional[DataProvenance] = None
 
     # memory
     run_id: str = ""
 
-    # 편의 프로퍼티
+    # 하위호환 프로퍼티
+    @property
+    def data_source(self) -> str:
+        return self.provenance.source if self.provenance else ""
+
+    @property
+    def data_fingerprint(self) -> str:
+        return self.provenance.fingerprint if self.provenance else ""
+
     @property
     def mult_after_tax(self) -> float:
         return self.result.mult_after_tax
@@ -117,8 +125,17 @@ def run_strategy(
                                      baseline_result=baseline_result)
     advisor_report = run_advisor(adv_input)
 
-    # 5. Provenance
+    # 5. Provenance (구조적 추적)
+    from aftertaxi.experiments.fingerprint import DataProvenance as DP
     fp = compute_fingerprint(returns, fx_rates)
+    provenance = DP(
+        fingerprint=fp,
+        source=data_source,
+        assets=list(returns.columns),
+        date_range=f"{returns.index[0]:%Y-%m}~{returns.index[-1]:%Y-%m}",
+        n_months=len(returns),
+        notes="synthetic" if data_source == "synthetic" else "",
+    )
 
     # 6. Memory
     run_id = ""
@@ -150,8 +167,7 @@ def run_strategy(
         trace=trace,
         advisor_report=advisor_report,
         baseline_result=baseline_result,
-        data_source=data_source,
-        data_fingerprint=fp,
+        provenance=provenance,
         run_id=run_id,
     )
 
