@@ -60,8 +60,15 @@ workbench/     분석 도구 (compare, sensitivity, tax_savings, interpret)
 
 ```bash
 pytest tests/ -q
-# 558 passed
+# 576+ passed
 ```
+
+## 데이터 주의사항
+
+- **합성 데이터**: 빠른 아이디어 검토용. 실제 시장과 다를 수 있음.
+- **yfinance**: Close = split-adjusted, 배당 미반영. 총수익률과 차이 있음.
+- **세금 계산**: 한국 세법 기반이지만 모든 예외를 커버하지 않음. 실전 의사결정 전 세무사 확인 권장.
+- **이 도구는 연구용 워크벤치**이며 투자 조언이 아닙니다.
 
 ## 새 전략 추가
 

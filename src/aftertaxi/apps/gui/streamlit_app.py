@@ -2,13 +2,13 @@
 """
 apps/gui/streamlit_app.py — aftertaxi 연구 대시보드
 ===================================================
-초보자 모드: 템플릿 → 실행 → 요약 → Advisor → 다음 실험
+초보자 모드: 전략 빌더 wizard → 실행 → 요약 → Advisor → 다음 실험
 고급 모드:   전체 파라미터 + 비교 + 세금/ISA/민감도
 
 실행: streamlit run src/aftertaxi/apps/gui/streamlit_app.py
+(사전에 pip install -e . 필요)
 """
-import sys, os, json
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+import json
 
 import numpy as np
 import pandas as pd
