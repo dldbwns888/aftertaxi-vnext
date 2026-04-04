@@ -138,12 +138,25 @@ def compile_account(acct_dict: dict, index: int = 0) -> AccountConfig:
     # BAND threshold
     band_threshold = acct_dict.get("band_threshold_pct", 0.05)
 
+    # Progressive tax (TAXABLE 전용)
+    tax_config = preset["tax_config"]
+    if acct_dict.get("progressive", False) and acct_type == "TAXABLE":
+        from aftertaxi.core.contracts import KOREA_PROGRESSIVE_BRACKETS
+        tax_config = TaxConfig(
+            capital_gains_rate=tax_config.capital_gains_rate,
+            annual_exemption=tax_config.annual_exemption,
+            isa_exempt_limit=tax_config.isa_exempt_limit,
+            dividend_withholding=tax_config.dividend_withholding,
+            progressive_brackets=KOREA_PROGRESSIVE_BRACKETS,
+            progressive_threshold=acct_dict.get("progressive_threshold", 20_000_000.0),
+        )
+
     return AccountConfig(
         account_id=account_id,
         account_type=preset["account_type"],
         monthly_contribution=monthly,
         rebalance_mode=rebal,
-        tax_config=preset["tax_config"],
+        tax_config=tax_config,
         annual_cap=annual_cap,
         allowed_assets=allowed,
         transaction_cost_bps=tx_bps,

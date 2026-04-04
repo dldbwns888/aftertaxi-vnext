@@ -110,9 +110,10 @@ class TestAccountDraft:
         d = AccountDraft(monthly=-100)
         assert len(d.validate()) > 0
 
-    def test_cap_less_than_monthly(self):
+    def test_cap_is_krw_no_validation(self):
+        """cap(KRW)과 monthly(USD)는 단위 달라 직접 비교 안 함."""
         d = AccountDraft(monthly=1000, annual_cap=500)
-        assert len(d.validate()) > 0
+        assert len(d.validate()) == 0  # 에러 아님
 
     def test_to_dict(self):
         d = AccountDraft(type="ISA", monthly=500, priority=0)

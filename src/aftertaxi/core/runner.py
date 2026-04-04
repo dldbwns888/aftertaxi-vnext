@@ -101,6 +101,7 @@ def run_engine(
             # 연간 납입 리셋
             for ledger in ledgers.values():
                 ledger.annual_contribution_usd = 0.0
+                ledger.annual_contribution_krw = 0.0
             current_year = dt.year
 
         # 2.5 배당 처리 (schedule이 있을 때만)
@@ -120,7 +121,7 @@ def run_engine(
                         )
 
         # 3~4. 입금 + 리밸런싱/매수 (AllocationPlanner에 위임)
-        ytd = {ac.account_id: ledgers[ac.account_id].annual_contribution_usd
+        ytd = {ac.account_id: ledgers[ac.account_id].annual_contribution_krw
                for ac in config.accounts}
         orders = planner.plan(
             target_weights=target_weights,
@@ -128,6 +129,7 @@ def run_engine(
             month_index=step,
             rebalance_every=rebal_every,
             ytd_contributions=ytd,
+            fx_rate=fx_rate,
         )
 
         for order in orders:
@@ -135,6 +137,7 @@ def run_engine(
 
             if order.deposit > 0:
                 ledger.deposit(order.deposit)
+                ledger.annual_contribution_krw += order.deposit * fx_rate
 
             if order.rebalance_mode == RebalanceMode.FULL and order.should_rebalance:
                 _execute_full_rebalance(ledger, order.target_weights, price_map, fx_rate)

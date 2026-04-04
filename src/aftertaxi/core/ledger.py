@@ -107,7 +107,8 @@ class AccountLedger:
 
         # ── 누적 ──
         self.total_invested_usd: float = 0.0
-        self.annual_contribution_usd: float = 0.0  # 연간 납입 (cap 체크용, 연말 리셋)
+        self.annual_contribution_usd: float = 0.0  # 연간 납입 USD (연말 리셋)
+        self.annual_contribution_krw: float = 0.0  # 연간 납입 KRW (cap 체크용, 연말 리셋)
 
         # ── 기록 ──
         self.monthly_values: List[float] = []

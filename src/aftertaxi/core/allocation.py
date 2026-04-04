@@ -55,16 +55,18 @@ class AllocationPlanner:
         month_index: int,
         rebalance_every: int = 1,
         ytd_contributions: Optional[Dict[str, float]] = None,
+        fx_rate: float = 1300.0,
     ) -> List[AccountOrder]:
         """월간 배분 계획 생성.
 
         Parameters
         ----------
         target_weights : 전체 포트폴리오 목표 비중 (자산→비중)
-        total_contribution : 이번 달 총 납입금
+        total_contribution : 이번 달 총 납입금 (USD)
         month_index : 0-based 월 인덱스
         rebalance_every : 리밸런싱 주기 (월)
-        ytd_contributions : 계좌별 연초 이후 누적 납입금
+        ytd_contributions : 계좌별 연초 이후 누적 납입금 (KRW)
+        fx_rate : 현재 환율 (cap KRW→USD 환산용)
         """
         if ytd_contributions is None:
             ytd_contributions = {a.account_id: 0.0 for a in self.accounts}
@@ -76,11 +78,12 @@ class AllocationPlanner:
             # 1. 납입금 배분 (priority 순)
             monthly = min(acct.monthly_contribution, remaining)
 
-            # annual_cap 확인
-            if acct.annual_cap is not None:
-                ytd = ytd_contributions.get(acct.account_id, 0.0)
-                room = max(0.0, acct.annual_cap - ytd)
-                monthly = min(monthly, room)
+            # annual_cap 확인 (KRW cap, KRW ytd → USD room)
+            if acct.annual_cap is not None and fx_rate > 0:
+                ytd_krw = ytd_contributions.get(acct.account_id, 0.0)
+                room_krw = max(0.0, acct.annual_cap - ytd_krw)
+                room_usd = room_krw / fx_rate
+                monthly = min(monthly, room_usd)
 
             remaining -= monthly
 

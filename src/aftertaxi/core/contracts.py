@@ -91,7 +91,7 @@ class AccountConfig:
     monthly_contribution: float
     rebalance_mode: RebalanceMode = RebalanceMode.CONTRIBUTION_ONLY
     tax_config: TaxConfig = field(default_factory=TaxConfig)
-    annual_cap: Optional[float] = None  # 연간 납입 한도 (USD). None이면 무제한
+    annual_cap: Optional[float] = None  # 연간 납입 한도 (KRW). None이면 무제한. ISA=₩20,000,000
     lot_method: Literal["AVGCOST"] = "AVGCOST"  # AVGCOST 전용. FIFO/HIFO는 scope outside.
     allowed_assets: Optional[set] = None  # 허용 자산 집합. None이면 전체 허용
     transaction_cost_bps: float = 0.0    # 거래비용 (basis points, 매수/매도 각각 적용)
@@ -101,11 +101,8 @@ class AccountConfig:
     def __post_init__(self):
         if self.monthly_contribution < 0:
             raise ValueError(f"monthly_contribution must be >= 0, got {self.monthly_contribution}")
-        if self.annual_cap is not None and self.annual_cap < self.monthly_contribution:
-            raise ValueError(
-                f"annual_cap ({self.annual_cap}) < monthly_contribution ({self.monthly_contribution}). "
-                f"연간 한도가 월납입금보다 작으면 납입 불가."
-            )
+        # annual_cap은 KRW, monthly_contribution은 USD이므로 직접 비교 불가.
+        # 런타임에 allocation planner가 KRW 기준으로 cap 체크.
 
 
 @dataclass(frozen=True)

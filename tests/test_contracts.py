@@ -189,9 +189,11 @@ class TestInputValidation:
         with pytest.raises(ValueError, match="monthly_contribution"):
             AccountConfig("t", AccountType.TAXABLE, -100)
 
-    def test_cap_less_than_monthly_raises(self):
-        with pytest.raises(ValueError, match="annual_cap"):
-            AccountConfig("t", AccountType.ISA, 1000.0, annual_cap=500.0)
+    def test_cap_is_krw(self):
+        """annual_cap은 KRW. monthly는 USD. 직접 비교 안 함."""
+        # cap=500 KRW, monthly=1000 USD → 단위 다르므로 ValueError 아님
+        c = AccountConfig("t", AccountType.ISA, 1000.0, annual_cap=500.0)
+        assert c.annual_cap == 500.0
 
     def test_valid_config_ok(self):
         c = AccountConfig("t", AccountType.TAXABLE, 1000.0)

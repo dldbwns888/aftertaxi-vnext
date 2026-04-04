@@ -41,19 +41,24 @@ class TestAllocationPlanner:
         assert orders[1].deposit == 300.0
 
     def test_annual_cap(self):
-        """annual_cap 초과분은 다음 계좌로."""
+        """annual_cap(KRW) 초과분은 다음 계좌로.
+
+        ISA cap = ₩2,600,000. ytd = ₩1,950,000. room = ₩650,000.
+        fx=1300이면 room_usd = $500.
+        """
         accts = [
-            AccountConfig("isa", AccountType.ISA, 1000.0, annual_cap=2000.0, priority=0),
+            AccountConfig("isa", AccountType.ISA, 1000.0,
+                          annual_cap=2_600_000.0, priority=0),  # KRW
             AccountConfig("tax", AccountType.TAXABLE, 1000.0, priority=1),
         ]
         planner = AllocationPlanner(accts)
-        # ISA에 이미 1500 납입 → 500만 더 가능
         orders = planner.plan(
             {"SPY": 1.0}, 2000.0, 0,
-            ytd_contributions={"isa": 1500.0, "tax": 0.0},
+            ytd_contributions={"isa": 1_950_000.0, "tax": 0.0},  # KRW
+            fx_rate=1300.0,
         )
-        assert orders[0].deposit == 500.0   # ISA: 2000-1500 = 500
-        assert orders[1].deposit == 1000.0  # TAXABLE: 나머지
+        assert abs(orders[0].deposit - 500.0) < 1.0   # ISA: room ₩650K / 1300 = $500
+        assert abs(orders[1].deposit - 1000.0) < 1.0   # TAXABLE: 나머지
 
     def test_allowed_assets_filter(self):
         """allowed_assets가 있으면 해당 자산만."""

@@ -76,9 +76,8 @@ class AccountDraft:
             errors.append(f"계좌 타입 '{self.type}' 미지원 (TAXABLE/ISA만)")
         if self.monthly is not None and self.monthly < 0:
             errors.append("월 납입금은 0 이상이어야 합니다")
-        if self.annual_cap is not None and self.monthly is not None:
-            if self.annual_cap < self.monthly:
-                errors.append("연간 한도가 월 납입금보다 작습니다")
+        # annual_cap은 KRW, monthly는 USD이므로 직접 비교 제거.
+        # 런타임 allocation에서 KRW 기준 cap 체크.
         return errors
 
     def to_dict(self) -> dict:
