@@ -397,30 +397,27 @@ def main():
     pending_label = st.session_state.pop("pending_patch_label", "")
 
     if run_triggered or pending_patch is not None:
-        from aftertaxi.strategies.compile import compile_backtest_with_trace
+        from aftertaxi.apps.service import run_strategy
 
         payload = draft1.to_dict()
 
-        # pending_patch가 있으면 적용
+        # pending_patch 적용
         if pending_patch is not None:
             from aftertaxi.strategies.compile import apply_suggestion_patch
             payload = apply_suggestion_patch(payload, pending_patch)
             st.info(f"💡 **{pending_label}** 제안이 적용되었습니다.")
 
-        cfg1, trace1 = compile_backtest_with_trace(payload)
-        all_assets = list(cfg1.strategy.weights.keys())
+        # 데이터 로드
+        all_assets = list(payload.get("strategy", {}).get("weights", {"SPY": 1}).keys())
 
-        cfg2 = None
+        # compare용 추가 자산
+        cfg2, out2 = None, None
         if compare_mode and key2:
             d2 = BacktestDraft(strategy=StrategyDraft(type=key2, params=params2),
                                accounts=accounts, n_months=state.get("n_months"))
+            from aftertaxi.strategies.compile import compile_backtest
             cfg2 = compile_backtest(d2.to_dict())
             all_assets = list(set(all_assets) | set(cfg2.strategy.weights.keys()))
-
-        # CompileTrace 카드 — "이렇게 이해했습니다"
-        with st.expander("📋 이렇게 이해했습니다", expanded=is_beginner):
-            for d in trace1.decisions:
-                st.markdown(f"**{d.field}**: {d.value}")
 
         with st.spinner("실행 중..."):
             try:
@@ -436,60 +433,25 @@ def main():
                 st.warning("⚠ **합성 데이터**로 실행. 실제 시장과 다를 수 있습니다. "
                            "실전 판단 전 실제 ETF 데이터(yfinance)로 재검증하세요.")
 
-            r1 = run_backtest(cfg1, returns=ret, prices=pri, fx_rates=fx)
-            a1 = build_attribution(r1)
-            r2, a2 = None, None
+            # 메인 실행 (서비스 레이어)
+            out = run_strategy(payload, ret, pri, fx, data_source=ds)
+
+            # compare 실행
             if cfg2:
+                from aftertaxi.core.facade import run_backtest
+                from aftertaxi.core.attribution import build_attribution
                 r2 = run_backtest(cfg2, returns=ret, prices=pri, fx_rates=fx)
                 a2 = build_attribution(r2)
 
-            # baseline 자동 비교 (SPY B&H)
-            r_baseline, a_baseline = None, None
-            if key1 != "spy_bnh":
-                try:
-                    from aftertaxi.core.contracts import (
-                        AccountConfig, AccountType, BacktestConfig as BTC,
-                        StrategyConfig as SC,
-                    )
-                    baseline_cfg = BTC(
-                        accounts=[AccountConfig("bl", AccountType.TAXABLE,
-                                                sum(a.monthly_contribution for a in cfg1.accounts))],
-                        strategy=SC("spy_bnh", {"SPY": 1.0}),
-                    )
-                    if "SPY" in pri.columns:
-                        r_baseline = run_backtest(baseline_cfg, returns=ret, prices=pri, fx_rates=fx)
-                        a_baseline = build_attribution(r_baseline)
-                except Exception:
-                    pass  # baseline 실패해도 메인 결과는 표시
+        # CompileTrace 카드
+        with st.expander("📋 이렇게 이해했습니다", expanded=is_beginner):
+            for d in out.trace.decisions:
+                st.markdown(f"**{d.field}**: {d.value}")
 
+        # 결과 꺼내기
+        r1, a1, cfg1 = out.result, out.attribution, out.config
+        r_baseline = out.baseline_result
         total_mo = sum(a.monthly or 0 for a in accounts)
-
-        # 실행 기록 저장 (provenance 포함)
-        try:
-            from aftertaxi.apps.memory import ResearchMemory
-            from aftertaxi.advisor.builder import build_advisor_input
-            from aftertaxi.advisor.rules import run_advisor
-            from aftertaxi.apps.data_fingerprint import compute_fingerprint
-
-            memory = ResearchMemory()
-            adv_inp = build_advisor_input(r1, a1, cfg1)
-            adv_report = run_advisor(adv_inp)
-            fp = compute_fingerprint(ret, fx)
-
-            memory.record(
-                config_json=json.dumps(payload) if pending_patch else draft1.to_json(),
-                gross_pv_usd=r1.gross_pv_usd,
-                net_pv_krw=r1.net_pv_krw,
-                tax_assessed_krw=r1.tax.total_assessed_krw,
-                mdd=r1.mdd,
-                n_months=r1.n_months,
-                name=f"{key1} {r1.n_months//12}yr",
-                advisor_summary=adv_report.summary,
-                data_fingerprint=fp,
-                data_source=ds,
-            )
-        except Exception:
-            pass  # 기록 실패해도 결과 표시는 진행
 
         # ══════════════════════════════════════
         # 결과 표시
