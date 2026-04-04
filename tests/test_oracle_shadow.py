@@ -17,14 +17,13 @@ shadow assert 3계층:
 import sys
 import os
 
-# 기존 aftertaxi 레포를 import path에 추가
+# 기존 aftertaxi 레포를 import path에 추가 (oracle shadow 비교용)
 _LEGACY_ROOT = os.path.join(os.path.dirname(__file__), "..", "..", "aftertaxi")
 if os.path.isdir(_LEGACY_ROOT):
     sys.path.insert(0, os.path.abspath(_LEGACY_ROOT))
 
 # 새 레포
 _VNEXT_SRC = os.path.join(os.path.dirname(__file__), "..", "src")
-sys.path.insert(0, os.path.abspath(_VNEXT_SRC))
 
 import numpy as np
 import pandas as pd

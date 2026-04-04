@@ -7,8 +7,6 @@ test_lane_a_dual_path.py — adjusted vs explicit dividend 이중 계산 방지
 
 이 테스트는 두 경로가 명확히 분리되어 있는지 검증한다.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pandas as pd

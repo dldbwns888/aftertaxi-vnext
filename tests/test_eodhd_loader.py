@@ -1,10 +1,9 @@
+import os
 # -*- coding: utf-8 -*-
 """
 test_eodhd_loader.py — EODHD 로더 테스트 + yfinance 교차 검증
 ===============================================================
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pandas as pd
@@ -17,7 +16,7 @@ from aftertaxi.loaders import (
     dividends_to_monthly, DividendRecord,
 )
 
-API_TOKEN = "69ce250dca4179.05825535"
+API_TOKEN = os.environ.get("EODHD_KEY", "")
 
 
 @pytest.fixture

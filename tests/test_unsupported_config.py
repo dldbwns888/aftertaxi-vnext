@@ -3,8 +3,6 @@
 test_unsupported_config.py — 미구현 설정이 silently ignored 되지 않는지 검증
 ============================================================================
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import pandas as pd
 import pytest

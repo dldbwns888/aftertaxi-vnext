@@ -6,8 +6,6 @@ tests/golden/test_tax_golden.py — 세금 골든 테스트
 
 각 테스트는 독립적이며, 실패 시 세금 엔진의 정확도 문제를 의미.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import pytest
 from aftertaxi.core.tax_engine import (

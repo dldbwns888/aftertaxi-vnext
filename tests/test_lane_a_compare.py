@@ -1,10 +1,9 @@
+import os
 # -*- coding: utf-8 -*-
 """
 test_lane_a_compare.py — adjusted vs explicit 비교 harness 테스트
 =================================================================
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pandas as pd
@@ -16,8 +15,8 @@ yf = pytest.importorskip("yfinance")
 
 from aftertaxi.lanes.lane_a.compare import compare_price_modes, ComparisonResult
 
-AV_KEY = "1F77HAKH3TOIU5DZ"
-FRED_KEY = "f8808fc62203cc8e92829766b2fde343"
+AV_KEY = os.environ.get("ALPHAVANTAGE_KEY", "")
+FRED_KEY = os.environ.get("FRED_KEY", "")
 
 
 @pytest.fixture

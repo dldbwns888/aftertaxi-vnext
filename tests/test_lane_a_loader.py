@@ -4,8 +4,6 @@ test_lane_a_loader.py — Lane A 배당 로더 + explicit mode 테스트
 ===============================================================
 yfinance 실데이터 사용. 네트워크 필요.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pandas as pd

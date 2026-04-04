@@ -2,8 +2,6 @@
 """
 test_strategies.py — 전략 등록소 테스트
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import pytest
 from aftertaxi.strategies import registry, StrategySpec

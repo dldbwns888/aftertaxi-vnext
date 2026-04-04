@@ -4,8 +4,6 @@ test_contracts.py — typed contract 자체 검증
 =============================================
 기존 엔진 의존 없이 contracts.py만 테스트.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pytest

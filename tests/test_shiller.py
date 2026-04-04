@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 """test_shiller.py — Shiller 152년 데이터 로더 테스트"""
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import pytest
 import numpy as np

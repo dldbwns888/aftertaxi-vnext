@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 """test_deposit_ownership.py — deposit 단일 소유권 검증 (PR A)"""
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import pytest
 from aftertaxi.core.ledger import AccountLedger

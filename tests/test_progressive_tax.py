@@ -9,8 +9,6 @@ bracket (지방세 포함):
   88M~150M: 38.5%, 150M~300M: 41.8%, 300M~500M: 44.0%,
   500M~1B: 46.2%, 1B~: 49.5%
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pandas as pd

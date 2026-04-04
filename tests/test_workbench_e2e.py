@@ -4,8 +4,6 @@ test_workbench_e2e.py — 워크벤치 실연결 테스트
 ==============================================
 compile → engine → workbench payload 전체 파이프라인.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import json
 import numpy as np

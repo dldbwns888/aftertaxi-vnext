@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 """test_bug_report.py — 버그 리포트 기반 회귀 테스트"""
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import pytest
 from aftertaxi.advisor.types import AdvisorInput, SuggestionPatch

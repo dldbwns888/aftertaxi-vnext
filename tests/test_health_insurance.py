@@ -3,8 +3,6 @@
 test_health_insurance.py — 건보료 MVP + ISA 배당세 면제 테스트
 ==============================================================
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pandas as pd

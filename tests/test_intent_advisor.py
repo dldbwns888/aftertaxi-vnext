@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 """test_intent_advisor.py — Intent 타입 + Advisor 규칙 테스트"""
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import pytest
 from aftertaxi.intent.types import FullIntent, StrategyIntent, AccountIntent, ResearchIntent

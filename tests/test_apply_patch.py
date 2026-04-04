@@ -4,8 +4,6 @@
 apply_patch() 구현 전에 계약을 먼저 박는다.
 이 테스트가 통과해야 apply_patch가 안전하다.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import pytest
 import json

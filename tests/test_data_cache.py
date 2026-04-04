@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 """test_data_cache.py — 데이터 캐시 + metadata-builder 동기화 테스트"""
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import tempfile
 from pathlib import Path

@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 """test_sweep.py — 파라미터 스윕 테스트"""
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pandas as pd

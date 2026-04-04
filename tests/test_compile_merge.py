@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 """test_compile_merge.py — compile merge 규칙 검증 (PR B)"""
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import pytest
 from aftertaxi.strategies.compile import compile_account, _merge_tax_config

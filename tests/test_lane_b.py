@@ -3,8 +3,6 @@
 test_lane_b.py — Lane B 합성 + A/B overlap calibration 테스트
 =============================================================
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pandas as pd

@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 """test_memory.py — 실험 기록 테스트"""
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import pytest
 from pathlib import Path

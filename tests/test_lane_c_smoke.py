@@ -6,8 +6,6 @@ C(A): Lane A 실ETF 수익률 기반 bootstrap
 C(B): Lane B 합성 수익률 기반 bootstrap
 둘 다 100 paths로 빠르게 돌려서 구조 검증.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pandas as pd

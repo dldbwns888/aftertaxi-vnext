@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 """test_sensitivity_and_watch.py — 민감도 + CLI 추가 테스트"""
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pytest

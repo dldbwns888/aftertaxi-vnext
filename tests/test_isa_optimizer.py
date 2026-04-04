@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 """test_isa_optimizer.py — ISA 최적화 엔진 테스트"""
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pandas as pd

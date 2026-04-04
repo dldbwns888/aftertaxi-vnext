@@ -5,8 +5,6 @@ test_lane_a.py — Lane A 실데이터 테스트
 실제 ETF + FX로 엔진 실행 검증.
 yfinance 필요 (없으면 skip).
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import pytest
 import pandas as pd

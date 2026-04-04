@@ -5,8 +5,6 @@ test_workbench_adapter.py — 엔진 → 워크벤치 직렬화 테스트
 실제 facade 실행 결과를 workbench payload로 변환하고
 shape/값 일관성을 검증.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import json
 import numpy as np

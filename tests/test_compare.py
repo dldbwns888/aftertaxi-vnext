@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 """test_compare.py — 멀티 전략 비교 리포트 + 통계 검정 테스트"""
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pandas as pd

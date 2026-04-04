@@ -10,8 +10,6 @@ service.run_strategy() 경유 — 앱과 동일 경로.
 이 테스트가 깨지면 → 엔진/세금/배분 로직이 변경된 것.
 의도적 변경이면 골든 값을 업데이트. 비의도적이면 버그.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pandas as pd

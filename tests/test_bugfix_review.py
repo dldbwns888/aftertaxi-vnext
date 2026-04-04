@@ -5,8 +5,6 @@ test_bugfix_review.py — 코드 리뷰 버그 검증 테스트
 tax_savings 환율 하드코딩, sensitivity 세전/세후 혼용,
 HMM 레짐 통계 성질, interpret 경계값 검증.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pandas as pd

@@ -4,8 +4,6 @@ test_phase0_bugfixes.py — L1, L2, R2 버그 수정 검증
 =====================================================
 Phase 0: 이월결손금 연도추적 + weight 정규화 통일.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pytest

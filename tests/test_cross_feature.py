@@ -4,8 +4,6 @@ test_cross_feature.py — 기능 교차 검증
 ======================================
 새로 추가된 BAND + progressive가 기존 기능과 올바르게 상호작용하는지.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pandas as pd

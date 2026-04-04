@@ -2,8 +2,6 @@
 """
 test_stress.py — 랜덤 시장 생존 테스트
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pandas as pd

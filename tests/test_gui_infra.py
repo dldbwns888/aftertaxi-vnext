@@ -4,8 +4,6 @@ test_gui_infra.py — GUI 인프라 테스트
 =====================================
 metadata + draft models + compile 파이프라인.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import json
 import pytest

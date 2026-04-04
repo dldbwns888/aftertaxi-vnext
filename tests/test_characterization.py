@@ -11,8 +11,6 @@ test_characterization.py — 현재 엔진 결과를 golden으로 고정
   C3: 24개월 TAXABLE + ISA, 연도 경계 정산
   C4: 정산 순서 golden (배당 + 건보료 + 양도세)
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pandas as pd

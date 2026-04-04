@@ -4,8 +4,6 @@ test_band_rebalance.py — BAND 리밸런스 테스트
 =============================================
 new capability: 비중 괴리 threshold 기반 조건부 FULL rebalance.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pandas as pd

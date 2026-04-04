@@ -4,8 +4,6 @@ test_settlement.py — settlement.py 직접 테스트
 =============================================
 oracle shadow에서 간접 커버되던 settlement를 직접 테스트.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import pytest
 

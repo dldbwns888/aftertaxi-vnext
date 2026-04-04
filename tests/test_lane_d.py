@@ -4,8 +4,6 @@ test_lane_d.py — Lane D haircut model 테스트
 =============================================
 코어 무관 검증. EngineResult를 읽기만 한다.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import numpy as np
 import pandas as pd

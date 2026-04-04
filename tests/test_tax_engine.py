@@ -4,8 +4,6 @@ test_tax_engine.py — 세금 순수 함수 단위 테스트
 ================================================
 ledger 없이 tax_engine만 테스트. 상태 없음 보장.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import pytest
 
