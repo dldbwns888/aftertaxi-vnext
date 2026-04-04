@@ -122,11 +122,13 @@ def _merge_tax_config(preset_tax: TaxConfig, override: dict) -> TaxConfig:
     return TaxConfig(**merged)
 
 
-def compile_account(acct_dict: dict, index: int = 0) -> AccountConfig:
+def compile_account(acct_dict: dict, index: int = 0, strict: bool = False) -> AccountConfig:
     """계좌 dict → AccountConfig.
 
-    TaxConfig 규칙: preset defaults + user "tax" override = final.
+    strict=True: 기본값 자동 채우기 대신 누락 시 에러.
+    strict=False (기본): 기존 동작 유지 (monthly=1000 등 자동 보정).
     """
+    import warnings
     acct_type = acct_dict.get("type", "TAXABLE").upper()
 
     if acct_type not in _ACCOUNT_PRESETS:
@@ -137,7 +139,19 @@ def compile_account(acct_dict: dict, index: int = 0) -> AccountConfig:
 
     preset = _ACCOUNT_PRESETS[acct_type]
 
-    # 기본값 + 사용자 오버라이드
+    # monthly_contribution
+    if "monthly_contribution" not in acct_dict:
+        if strict:
+            raise ValueError(
+                f"계좌 {index} ({acct_type}): monthly_contribution 누락. "
+                f"strict 모드에서는 반드시 지정해야 합니다."
+            )
+        else:
+            warnings.warn(
+                f"계좌 {index} ({acct_type}): monthly_contribution 미지정 → 기본값 $1,000 적용.",
+                UserWarning, stacklevel=2,
+            )
+
     account_id = acct_dict.get("account_id", f"{acct_type.lower()}_{index}")
     monthly = acct_dict.get("monthly_contribution", 1000.0)
     priority = acct_dict.get("priority", preset["priority"])
@@ -186,17 +200,24 @@ def compile_account(acct_dict: dict, index: int = 0) -> AccountConfig:
     )
 
 
-def compile_accounts(acct_list: List[dict]) -> List[AccountConfig]:
+def compile_accounts(acct_list: List[dict], strict: bool = False) -> List[AccountConfig]:
     """계좌 리스트 → AccountConfig 리스트."""
-    return [compile_account(a, i) for i, a in enumerate(acct_list)]
+    if not acct_list:
+        if strict:
+            raise ValueError("accounts 목록이 비어 있습니다.")
+        acct_list = [{"type": "TAXABLE"}]
+    return [compile_account(a, i, strict=strict) for i, a in enumerate(acct_list)]
 
 
 # ══════════════════════════════════════════════
 # Full Backtest Compile
 # ══════════════════════════════════════════════
 
-def compile_backtest(payload: dict) -> BacktestConfig:
+def compile_backtest(payload: dict, strict: bool = False) -> BacktestConfig:
     """전체 payload → BacktestConfig.
+
+    strict=True: 누락 필드 시 에러 (API/프로덕션용).
+    strict=False: 기존 동작 유지 (GUI/연구용).
 
     Parameters
     ----------
@@ -215,7 +236,7 @@ def compile_backtest(payload: dict) -> BacktestConfig:
 
     # accounts (기본: TAXABLE $1000)
     acct_dicts = payload.get("accounts", [{"type": "TAXABLE"}])
-    accounts = compile_accounts(acct_dicts)
+    accounts = compile_accounts(acct_dicts, strict=strict)
 
     # n_months
     n_months = payload.get("n_months")
