@@ -94,13 +94,37 @@ _ACCOUNT_PRESETS = {
 }
 
 
+def _merge_tax_config(preset_tax: TaxConfig, override: dict) -> TaxConfig:
+    """preset TaxConfig + user override → 최종 TaxConfig.
+
+    규칙: preset은 default supplier. user가 이긴다.
+    """
+    from dataclasses import asdict
+
+    base = asdict(preset_tax)
+    # "progressive": true 단축키 → KOREA_PROGRESSIVE_BRACKETS 주입
+    if override.pop("progressive", False):
+        from aftertaxi.core.contracts import KOREA_PROGRESSIVE_BRACKETS
+        base["progressive_brackets"] = KOREA_PROGRESSIVE_BRACKETS
+
+    unknown = set(override) - set(base)
+    if unknown:
+        raise ValueError(f"Unknown TaxConfig fields: {sorted(unknown)}")
+
+    merged = {**base, **override}
+    # progressive_brackets는 tuple이어야 함 (JSON에서 list로 올 수 있음)
+    if merged.get("progressive_brackets") is not None:
+        merged["progressive_brackets"] = tuple(
+            tuple(x) if isinstance(x, list) else x
+            for x in merged["progressive_brackets"]
+        )
+    return TaxConfig(**merged)
+
+
 def compile_account(acct_dict: dict, index: int = 0) -> AccountConfig:
     """계좌 dict → AccountConfig.
 
-    Parameters
-    ----------
-    acct_dict : {"type": "ISA", "monthly_contribution": 300, ...}
-    index : 자동 account_id 생성용 인덱스
+    TaxConfig 규칙: preset defaults + user "tax" override = final.
     """
     acct_type = acct_dict.get("type", "TAXABLE").upper()
 
@@ -138,18 +162,14 @@ def compile_account(acct_dict: dict, index: int = 0) -> AccountConfig:
     # BAND threshold
     band_threshold = acct_dict.get("band_threshold_pct", 0.05)
 
-    # Progressive tax (TAXABLE 전용)
-    tax_config = preset["tax_config"]
-    if acct_dict.get("progressive", False) and acct_type == "TAXABLE":
-        from aftertaxi.core.contracts import KOREA_PROGRESSIVE_BRACKETS
-        tax_config = TaxConfig(
-            capital_gains_rate=tax_config.capital_gains_rate,
-            annual_exemption=tax_config.annual_exemption,
-            isa_exempt_limit=tax_config.isa_exempt_limit,
-            dividend_withholding=tax_config.dividend_withholding,
-            progressive_brackets=KOREA_PROGRESSIVE_BRACKETS,
-            progressive_threshold=acct_dict.get("progressive_threshold", 20_000_000.0),
-        )
+    # TaxConfig: preset merge user override
+    tax_override = dict(acct_dict.get("tax", {}))
+    # 하위 호환: top-level "progressive" → tax override로 이동
+    if "progressive" in acct_dict:
+        tax_override.setdefault("progressive", acct_dict["progressive"])
+    if "progressive_threshold" in acct_dict:
+        tax_override.setdefault("progressive_threshold", acct_dict["progressive_threshold"])
+    tax_config = _merge_tax_config(preset["tax_config"], tax_override)
 
     return AccountConfig(
         account_id=account_id,
