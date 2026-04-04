@@ -144,18 +144,24 @@ def _render_enhanced_chart(result, total_monthly):
 
 
 def _render_tax_timeline(result):
-    """세금 추정 평균 (연도별 실제 데이터 아님)."""
-    n_years = max(1, result.n_months // 12)
-    cgt = sum(a.capital_gains_tax_krw for a in result.accounts)
-    div = sum(a.dividend_tax_krw for a in result.accounts)
-    hi = result.person.health_insurance_krw
-    df = pd.DataFrame({"양도세": [cgt / n_years] * n_years,
-                        "배당세": [div / n_years] * n_years,
-                        "건보료": [hi / n_years] * n_years},
-                       index=[f"{i+1}년차" for i in range(n_years)])
-    st.bar_chart(df, use_container_width=True)
-    st.caption(f"⚠ 연간 추정 평균입니다 (총 세금 ₩{cgt + div + hi:,.0f} ÷ {n_years}년). "
-               f"실제 연도별 분해는 analytics 업데이트 후 제공 예정.")
+    """연도별 세금 분해 — 실제 데이터."""
+    history = result.annual_tax_history
+    if not history:
+        st.caption("세금 정산 기록이 없습니다 (1년 미만이거나 세금 0).")
+        return
+
+    df = pd.DataFrame(history)
+    df = df.set_index("year")
+    chart_df = df[["cgt_krw", "dividend_tax_krw", "health_insurance_krw"]].copy()
+    chart_df.columns = ["양도세", "배당세", "건보료"]
+    chart_df.index = [f"{y}년" for y in chart_df.index]
+
+    st.bar_chart(chart_df, use_container_width=True)
+
+    total = df["total_krw"].sum()
+    peak_year = df["total_krw"].idxmax() if len(df) > 0 else "?"
+    peak_val = df["total_krw"].max() if len(df) > 0 else 0
+    st.caption(f"총 세금: ₩{total:,.0f} / 최고 부담 연도: {peak_year}년 (₩{peak_val:,.0f})")
 
 
 def _render_comparison(r1, r2, l1, l2):

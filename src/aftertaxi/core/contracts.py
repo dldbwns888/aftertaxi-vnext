@@ -218,6 +218,10 @@ class EngineResult:
     # ── 시계열 ──
     monthly_values: np.ndarray  # 월별 합산 PV (USD)
 
+    # ── 연도별 세금 분해 ──
+    annual_tax_history: List[Dict] = field(default_factory=list)
+    # [{year, cgt_krw, dividend_tax_krw, health_insurance_krw, total_krw}, ...]
+
     def __post_init__(self):
         """생성 시 불변식 검증."""
         # gross_pv_krw ≈ gross_pv_usd × fx_rate

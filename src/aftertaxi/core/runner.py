@@ -74,6 +74,7 @@ def run_engine(
 
     # ── 월 루프 ──
     current_year = index[start].year if start < len(index) else None
+    annual_tax_history = []  # 연도별 세금 분해
 
     for step in range(n):
         i = start + step
@@ -86,8 +87,10 @@ def run_engine(
 
         _step_mark_to_market(ledgers, price_map)
 
-        current_year = _step_year_boundary(
+        current_year, year_tax = _step_year_boundary(
             ledgers, current_year, dt, fx_rate, config.enable_health_insurance)
+        if year_tax is not None:
+            annual_tax_history.append(year_tax)
 
         _step_dividends(ledgers, config.dividend_schedule, step, price_map, fx_rate)
 
@@ -106,10 +109,35 @@ def run_engine(
     final_prices = {k: v for k, v in prices.iloc[final_i].to_dict().items() if v == v}
     final_fx = _get_fx_rate(final_dt, fx_lookup)
 
+    # 최종 청산 전 스냅샷
+    pre_cgt = sum(l._capital_gains_tax_assessed_krw for l in ledgers.values())
+    pre_div = sum(l._dividend_tax_assessed_krw for l in ledgers.values())
+    pre_hi = sum(l._health_insurance_assessed_krw for l in ledgers.values())
+
     settle_final(ledgers, final_dt.year, final_prices, final_fx,
                  enable_health_insurance=config.enable_health_insurance)
 
-    return _aggregate(ledgers, final_fx)
+    # 최종 청산분 기록
+    post_cgt = sum(l._capital_gains_tax_assessed_krw for l in ledgers.values())
+    post_div = sum(l._dividend_tax_assessed_krw for l in ledgers.values())
+    post_hi = sum(l._health_insurance_assessed_krw for l in ledgers.values())
+    final_tax = {
+        "year": final_dt.year,
+        "cgt_krw": post_cgt - pre_cgt,
+        "dividend_tax_krw": post_div - pre_div,
+        "health_insurance_krw": post_hi - pre_hi,
+        "total_krw": (post_cgt - pre_cgt) + (post_div - pre_div) + (post_hi - pre_hi),
+    }
+    if final_tax["total_krw"] > 0:
+        # 같은 연도 entry가 이미 있으면 합산
+        existing = [h for h in annual_tax_history if h["year"] == final_dt.year]
+        if existing:
+            for k in ["cgt_krw", "dividend_tax_krw", "health_insurance_krw", "total_krw"]:
+                existing[0][k] += final_tax[k]
+        else:
+            annual_tax_history.append(final_tax)
+
+    return _aggregate(ledgers, final_fx, annual_tax_history)
 
 
 # ══════════════════════════════════════════════
@@ -131,16 +159,35 @@ def _step_year_boundary(
     dt: pd.Timestamp,
     fx_rate: float,
     enable_health_insurance: bool,
-) -> int:
-    """2. 연도 전환 → 세금 정산 + 납입 리셋. Returns: 갱신된 current_year."""
+) -> tuple:
+    """2. 연도 전환 → 세금 정산. Returns: (갱신된 year, tax_snapshot or None)."""
     if current_year is not None and dt.year != current_year:
+        # 정산 전 스냅샷
+        pre_cgt = sum(l._capital_gains_tax_assessed_krw for l in ledgers.values())
+        pre_div = sum(l._dividend_tax_assessed_krw for l in ledgers.values())
+        pre_hi = sum(l._health_insurance_assessed_krw for l in ledgers.values())
+
         settle_year_end(ledgers, current_year, fx_rate,
                        enable_health_insurance=enable_health_insurance)
+
+        # 정산 후 차이 = 이번 연도 세금
+        post_cgt = sum(l._capital_gains_tax_assessed_krw for l in ledgers.values())
+        post_div = sum(l._dividend_tax_assessed_krw for l in ledgers.values())
+        post_hi = sum(l._health_insurance_assessed_krw for l in ledgers.values())
+
+        year_tax = {
+            "year": current_year,
+            "cgt_krw": post_cgt - pre_cgt,
+            "dividend_tax_krw": post_div - pre_div,
+            "health_insurance_krw": post_hi - pre_hi,
+            "total_krw": (post_cgt - pre_cgt) + (post_div - pre_div) + (post_hi - pre_hi),
+        }
+
         for ledger in ledgers.values():
             ledger.annual_contribution_usd = 0.0
             ledger.annual_contribution_krw = 0.0
-        return dt.year
-    return current_year
+        return dt.year, year_tax
+    return current_year, None
 
 
 def _step_dividends(
@@ -233,7 +280,8 @@ def _get_fx_rate(dt: pd.Timestamp, fx_lookup: tuple) -> float:
     return fx_dict[sorted_dates[0]]
 
 
-def _aggregate(ledgers: Dict[str, AccountLedger], reporting_fx: float) -> EngineResult:
+def _aggregate(ledgers: Dict[str, AccountLedger], reporting_fx: float,
+               annual_tax_history: list = None) -> EngineResult:
     """전 계좌 통합 결과."""
     account_summaries = []
     total_pv = 0.0
@@ -305,6 +353,7 @@ def _aggregate(ledgers: Dict[str, AccountLedger], reporting_fx: float) -> Engine
         accounts=account_summaries,
         person=person,
         monthly_values=combined_monthly if combined_monthly is not None else np.array([]),
+        annual_tax_history=annual_tax_history or [],
     )
 
 
