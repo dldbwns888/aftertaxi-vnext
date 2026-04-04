@@ -136,8 +136,7 @@ def run_engine(
             ledger = ledgers[order.account_id]
 
             if order.deposit > 0:
-                ledger.deposit(order.deposit)
-                ledger.annual_contribution_krw += order.deposit * fx_rate
+                ledger.deposit(order.deposit, fx_rate)
 
             if order.rebalance_mode == RebalanceMode.FULL and order.should_rebalance:
                 _execute_full_rebalance(ledger, order.target_weights, price_map, fx_rate)

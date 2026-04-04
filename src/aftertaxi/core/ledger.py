@@ -177,14 +177,21 @@ class AccountLedger:
 
     # ── 입금 ──
 
-    def deposit(self, amount_usd: float) -> float:
-        """입금. Returns: 실제 입금액 (cap 적용 후)."""
+    def deposit(self, amount_usd: float, fx_rate: float = 1300.0) -> float:
+        """입금. 납입 사건의 단일 소유자.
+
+        cash_usd, annual_contribution_usd, annual_contribution_krw를
+        한 호출에서 원자적으로 갱신.
+        """
         if amount_usd <= 0:
             return 0.0
+        if fx_rate <= 0:
+            raise ValueError(f"fx_rate must be positive, got {fx_rate}")
         self.cash_usd += amount_usd
         self.total_invested_usd += amount_usd
         self.annual_contribution_usd += amount_usd
-        self._log("deposit", amount_usd=amount_usd)
+        self.annual_contribution_krw += amount_usd * fx_rate
+        self._log("deposit", amount_usd=amount_usd, fx_rate=fx_rate)
         return amount_usd
 
     # ── 매수 (FX) ──
