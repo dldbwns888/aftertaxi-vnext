@@ -1,133 +1,72 @@
 # aftertaxi-vnext
 
-세후 DCA 레버리지 ETF 백테스트 엔진 — FX-only 재설계.
+한국 거주자의 해외 ETF 적립식 세후 백테스트 엔진.
 
-## 현재 위상: Primary-candidate Engine
+## 설치 (30초)
 
-기존 [aftertaxi](https://github.com/dldbwns888/aftertaxi) (`v3.1.0-freeze`)를 구조적으로 대체하는 차세대 엔진.
-코어 잠금(oracle shadow 8/8 통과) + 기능 승계(strategies, validation) 완료.
-
-**아직 완전한 대체품은 아님**: BAND/BUDGET 리밸, PENSION, 종합과세 누진, Lane D 미구현.
-
-### 5개 축
-
-| 축 | 역할 | 모듈 |
-|---|---|---|
-| **코어 엔진** | 돈 상태 변경 + 세금 계산 + 정산 | core/ |
-| **데이터 레이어** | 질문별 검증 프레임 | lanes/, loaders/ |
-| **해석 레이어** | "왜 이런 결과?" | attribution, workbench_adapter |
-| **검증 레이어** | "이 전략이 진짜?" | validation/ (15+ 도구) |
-| **전략 레이어** | 입력 → 실행 파이프라인 | strategies/ |
-
-### 할 수 있는 것
-- FX-only 코어: C/O + FULL, TAXABLE + ISA, AVGCOST
-- 계좌 제약: annual_cap, allowed_assets, priority-based allocation
-- 세금 버킷: 양도세 / 배당세 / 건보료(MVP) 항목별 추적
-- PersonSummary: person-scope liability 분리 (계좌 귀속 왜곡 방지)
-- 거래비용, 배당(원천징수+재투자), EventJournal
-- Lane A: 실제 ETF + FX (Alpha Vantage/FMP + FRED, dual-path)
-- Lane B: 합성 장기역사 (2-mode: Overlap + Structural)
-- Lane C: Block Bootstrap Monte Carlo (provenance + joblib 병렬화)
-- validation/: DSR, PSR, Bootstrap, Permutation, CUSUM, Rolling Sharpe, Walk-Forward, IS-OOS, CPCV, PBO, 랜덤 시장 생존
-- strategies/: registry (7종 빌더) + compile (JSON → BacktestConfig)
-- MarketDB: SQLite 멀티소스 통합 (AV, FMP, EODHD, yfinance, FRED)
-
-### 아직 못 하는 것
-- BAND/BUDGET 리밸 → `NotImplementedError`
-- PENSION 계좌 → `NotImplementedError`
-- FIFO/HIFO lot method → `NotImplementedError`
-- 종합과세 누진구간 (현재 고정 세율)
-- Lane D (execution realism)
-- workbench 실연결 (현재 mock)
-
-## 실행 파이프라인
-
-```
-JSON / dict / GUI
-    ↓
-strategies/compile.py
-    ↓
-BacktestConfig (typed)
-    ↓
-facade.run_backtest()
-    ↓
-runner → settlement → ledger → tax_engine
-    ↓
-EngineResult + PersonSummary
-    ↓
-attribution / validation / workbench
+```bash
+git clone https://github.com/dldbwns888/aftertaxi-vnext.git
+cd aftertaxi-vnext
+pip install -e . --break-system-packages
 ```
 
-## 구조
+## 첫 실행
 
-```
-src/aftertaxi/
-  core/
-    contracts.py          — typed 계약 + 불변식 + 프리셋 + 팩토리
-    facade.py             — run_backtest() + 미구현 설정 검증
-    runner.py             — 월 루프 + allocation
-    settlement.py         — 정산 순서 (account + person scope)
-    ledger.py             — FX-only 계좌 원장
-    allocation.py         — AllocationPlanner (priority + cap + allowed)
-    tax_engine.py         — 순수 세금 계산
-    dividend.py           — 배당 이벤트
-    attribution.py        — 세후 결과 원인 분해
-    event_journal.py      — opt-in 이벤트 로그
-    workbench_adapter.py  — JSON 직렬화
-  strategies/
-    registry.py           — @register + build + build_from_dict
-    spec.py               — StrategySpec (메타데이터 포함)
-    builders.py           — 7종 내장 전략
-    compile.py            — JSON/dict → BacktestConfig
-  lanes/
-    lane_a/               — 실제 ETF + FX, dual-path (adjusted/explicit)
-    lane_b/               — 합성 장기역사, 2-mode (overlap/structural)
-    lane_c/               — Bootstrap MC + provenance
-  loaders/
-    alphavantage.py, fred.py, eodhd.py, fmp.py, market_db.py
-  validation/
-    basic.py              — 5개 검산 (tax drag, MDD, PV 등)
-    statistical.py        — 5개 통계 (DSR, PSR, Bootstrap, Permutation, CUSUM)
-    stability.py          — 3개 안정성 (Rolling Sharpe, Walk-Forward, IS-OOS)
-    robustness.py         — 2개 강건성 (CPCV, PBO)
-    stress.py             — 랜덤 시장 생존 (vector sign-flip null)
-    reports.py, run.py    — typed 리포트 + 통합 실행
-  apps/
-    cli.py                — CLI 실행기 (JSON → 결과, --lane-d 지원)
-    data_provider.py      — 데이터 공급자 (synthetic/yfinance/lane_a)
-    data_cache.py         — SQLite 캐시
-    gui/                  — Streamlit 프로토타입 + draft models
+```bash
+# CLI
+aftertaxi examples/01_spy_basic.json
+
+# Streamlit GUI
+streamlit run src/aftertaxi/apps/gui/streamlit_app.py
 ```
 
-## 세금 불변식
+## 예제
+
+| 파일 | 설명 |
+|---|---|
+| `examples/01_spy_basic.json` | SPY 100% B&H, 20년 |
+| `examples/02_q60s40_isa.json` | QQQ+SSO 6:4, ISA 우선 |
+| `examples/03_progressive_tax.json` | 종합과세 누진 |
+| `examples/04_band_rebalance.json` | BAND 5% 리밸런싱 |
+| `examples/05_full_setup.json` | ISA+누진+BAND 전체 조합 |
+
+## 아키텍처
 
 ```
-gross_pv_krw == gross_pv_usd × reporting_fx_rate
-net_pv_krw   == gross_pv_krw − tax_unpaid_krw
-assessed     == paid + unpaid
+apps/          CLI, Streamlit, Memory
+  ↓
+intent/        자연어 의도 → 구조화
+advisor/       진단 + 제안 (계산 금지, 판단만)
+  ↓
+strategies/    전략 빌더 + compile + metadata
+  ↓
+core/          엔진 (facade → runner → settlement → ledger → tax_engine)
+  ↓
+validation/    검증 (DSR, PSR, PBO, walk-forward)
+lanes/         Lane A~D (benchmark, 비교, tax-alpha, 합성 생존)
+workbench/     분석 도구 (compare, sensitivity, tax_savings, interpret)
 ```
 
-## 코어 안정성 근거
+## 핵심 기능
 
-- Oracle shadow 8개 시나리오 21 tests 전부 통과 (기존 엔진 대비)
-- Characterization golden 20개 (손계산 대조 포함)
-- Settlement 직접 테스트 12개
-- Validation 15+ 도구
-- 코어 경계 가이드 (`docs/core_boundary_guide.md`)
+- **세후 백테스트**: 양도세 22% + 누진세 8구간 + ISA 비과세 + 이월결손금 5년
+- **TAXABLE / ISA**: 계좌별 세금 정책, 연간 납입 한도 (KRW), priority 기반 배분
+- **3가지 리밸런싱**: CONTRIBUTION_ONLY / FULL / BAND
+- **Advisor**: 세금 drag, ISA 활용, MDD 진단 → 개선 제안 (max 3)
+- **Lane D**: 합성 경로 생존성 (sign-flip, HMM regime)
+- **초보자/고급 모드**: Streamlit GUI
 
 ## 테스트
 
 ```bash
-PYTHONPATH=/path/to/aftertaxi:src python -m pytest tests/ -q
+pytest tests/ -q
+# 558 passed
 ```
 
-435+ tests, ~39초 (API 의존 테스트 제외).
+## 새 전략 추가
 
-## 문서
+→ [docs/add_strategy.md](docs/add_strategy.md)
 
-- `docs/quickstart.md` — **5분 안에 첫 백테스트**
-- `docs/expansion_guardrails.md` — 확장 금지선/권장선
-- `docs/core_boundary_guide.md` — 기능별 수정 가이드
-- `docs/oracle_shadow_classification.md` — 기존 엔진 테스트 481개 3분류
-- `docs/primary_promotion_checklist.md` — Primary 승격 근거
-- `docs/lane_d_design.md` — Lane D 설계안
+## 라이선스
+
+Private research use.

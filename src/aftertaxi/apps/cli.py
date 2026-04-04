@@ -120,6 +120,8 @@ def main(argv=None):
     # 추가 분석
     parser.add_argument("--sensitivity", action="store_true", help="민감도 히트맵 (growth × vol)")
     parser.add_argument("--watch", action="store_true", help="파일 변경 감지 → 자동 재실행")
+    parser.add_argument("--compare", nargs="+", metavar="JSON",
+                        help="비교할 추가 config (예: --compare b.json c.json)")
 
     args = parser.parse_args(argv)
 
@@ -139,6 +141,19 @@ def main(argv=None):
 
     # 3. 합성 데이터 생성
     assets = list(config.strategy.weights.keys())
+
+    # compare configs (있으면)
+    compare_configs = []
+    compare_labels = [Path(args.config).stem]
+    if args.compare:
+        for cp in args.compare:
+            with open(cp) as f:
+                cp_payload = json.load(f)
+            cp_cfg = compile_backtest(cp_payload)
+            compare_configs.append(cp_cfg)
+            compare_labels.append(Path(cp).stem)
+            assets = list(set(assets) | set(cp_cfg.strategy.weights.keys()))
+
     returns, prices, fx = _generate_synthetic_data(
         assets, n_months=n_months,
         annual_growth=args.growth, annual_vol=args.vol,
@@ -159,6 +174,30 @@ def main(argv=None):
         from aftertaxi.core.attribution import build_attribution
         attribution = build_attribution(result)
         _print_result(result, attribution)
+
+    # 5.5 멀티 전략 비교 (--compare)
+    if compare_configs:
+        from aftertaxi.core.attribution import build_attribution as ba
+        from aftertaxi.workbench.compare import compare_strategies
+        results = [result]
+        for cc in compare_configs:
+            r = run_backtest(cc, returns=returns, prices=prices, fx_rates=fx)
+            results.append(r)
+
+        report = compare_strategies(results, compare_labels)
+        print("\n" + "=" * 60)
+        print("  전략 비교")
+        print("=" * 60)
+        table = report.rank_table()
+        # 헤더
+        print(f"  {'순위':<4} {'전략':<20} {'세전':>8} {'세후':>10} {'MDD':>8} {'drag':>6}")
+        print("  " + "-" * 56)
+        for row in table:
+            print(f"  {row['rank']:<4} {row['name']:<20} "
+                  f"{row['mult_pre_tax']:>7.2f}x {row['mult_after_tax']:>9.2f}x "
+                  f"{row['mdd']:>7.1%} {row['tax_drag']:>5.1f}%")
+        print(f"\n  세후 우승: {report.winner}")
+        print()
 
     # 6. Lane D (optional)
     if args.lane_d_compare or args.lane_d:
