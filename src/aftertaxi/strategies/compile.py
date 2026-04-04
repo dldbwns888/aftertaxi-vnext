@@ -236,3 +236,51 @@ def compile_backtest(payload: dict) -> BacktestConfig:
         dividend_schedule=div_schedule,
         enable_health_insurance=enable_hi,
     )
+
+
+def compile_backtest_with_trace(payload: dict):
+    """compile + CompileTrace 생성. UI용.
+
+    Returns: (BacktestConfig, CompileTrace)
+    """
+    from aftertaxi.intent.plan import CompileTrace, CompileDecision
+
+    config = compile_backtest(payload)
+    decisions = []
+
+    # 전략
+    strat = payload.get("strategy", {})
+    stype = strat.get("type", "custom")
+    weights = config.strategy.weights
+    decisions.append(CompileDecision(
+        "전략", f"{stype} ({', '.join(f'{k} {v:.0%}' for k, v in weights.items())})",
+        "strategy.type" if "type" in strat else "custom weights",
+    ))
+
+    # 계좌
+    for ac in config.accounts:
+        cap_str = f", 연 한도 ₩{ac.annual_cap:,.0f}" if ac.annual_cap else ""
+        prog_str = ", 누진세" if ac.tax_config.progressive_brackets else ""
+        decisions.append(CompileDecision(
+            f"계좌 {ac.account_id}",
+            f"{ac.account_type.value} ${ac.monthly_contribution:,.0f}/월 "
+            f"{ac.rebalance_mode.value}{cap_str}{prog_str}",
+            f"priority={ac.priority}",
+        ))
+
+    # 기간
+    if config.n_months:
+        decisions.append(CompileDecision("기간", f"{config.n_months}개월", "n_months"))
+
+    # 배당
+    if config.dividend_schedule:
+        decisions.append(CompileDecision("배당", "활성", "dividend_yields"))
+
+    # 건보료
+    if config.enable_health_insurance:
+        decisions.append(CompileDecision("건보료", "활성", "enable_health_insurance"))
+
+    summary = f"{stype} / {len(config.accounts)}계좌 / {config.n_months or '?'}개월"
+    trace = CompileTrace(input_intent_summary=summary, decisions=decisions)
+
+    return config, trace

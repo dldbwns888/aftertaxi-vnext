@@ -73,7 +73,7 @@ def _load_data(source, assets, s):
 # ══════════════════════════════════════════════
 
 def _render_advisor_card(result, attribution, config):
-    """Advisor 진단 + 제안 카드."""
+    """Advisor 진단 + 제안 + 원클릭 다음 실험 버튼."""
     from aftertaxi.advisor.builder import build_advisor_input
     from aftertaxi.advisor.rules import run_advisor
 
@@ -95,8 +95,19 @@ def _render_advisor_card(result, attribution, config):
     if report.suggestions:
         st.markdown("---")
         st.subheader("개선 제안")
-        for s in report.suggestions:
-            st.markdown(f"💡 **{s.kind}**: {s.message}")
+        for i, s in enumerate(report.suggestions):
+            col_text, col_btn = st.columns([4, 1])
+            with col_text:
+                st.markdown(f"💡 **{s.kind}**: {s.message}")
+            with col_btn:
+                if s.patch:
+                    st.download_button(
+                        "📋 설정 복사",
+                        json.dumps(s.patch, ensure_ascii=False, indent=2),
+                        file_name=f"suggestion_{s.kind}.json",
+                        mime="application/json",
+                        key=f"adv_patch_{i}",
+                    )
 
 
 # ══════════════════════════════════════════════
@@ -300,7 +311,9 @@ def main():
 
     # ── 실행 ──
     if st.button("백테스트 실행", type="primary", use_container_width=True):
-        cfg1 = compile_backtest(draft1.to_dict())
+        from aftertaxi.strategies.compile import compile_backtest_with_trace
+
+        cfg1, trace1 = compile_backtest_with_trace(draft1.to_dict())
         all_assets = list(cfg1.strategy.weights.keys())
 
         cfg2 = None
@@ -309,6 +322,11 @@ def main():
                                accounts=accounts, n_months=state.get("n_months"))
             cfg2 = compile_backtest(d2.to_dict())
             all_assets = list(set(all_assets) | set(cfg2.strategy.weights.keys()))
+
+        # CompileTrace 카드 — "이렇게 이해했습니다"
+        with st.expander("📋 이렇게 이해했습니다", expanded=is_beginner):
+            for d in trace1.decisions:
+                st.markdown(f"**{d.field}**: {d.value}")
 
         with st.spinner("실행 중..."):
             try:
