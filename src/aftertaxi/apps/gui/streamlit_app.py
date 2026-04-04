@@ -97,18 +97,13 @@ def _render_advisor_card(result, attribution, config, baseline_result=None):
         st.markdown("---")
         st.subheader("💡 개선 제안")
         for i, s in enumerate(report.suggestions):
-            col_text, col_btn = st.columns([4, 1])
-            with col_text:
-                st.markdown(f"💡 **{s.kind}**: {s.message}")
-            with col_btn:
-                if s.patch:
-                    st.download_button(
-                        "📋 설정 복사",
-                        json.dumps(s.patch, ensure_ascii=False, indent=2),
-                        file_name=f"suggestion_{s.kind}.json",
-                        mime="application/json",
-                        key=f"adv_patch_{i}",
-                    )
+            st.markdown(f"💡 **{s.kind}**: {s.message}")
+            if s.patch and s.patch.get("_action") != "compare":
+                if st.button(f"▶ {s.kind} 적용해서 재실행", key=f"adv_run_{i}",
+                             use_container_width=True):
+                    st.session_state["pending_patch"] = s.patch
+                    st.session_state["pending_patch_label"] = s.kind
+                    st.rerun()
 
 
 # ══════════════════════════════════════════════
@@ -321,10 +316,22 @@ def main():
                            file_name="aftertaxi_config.json", mime="application/json")
 
     # ── 실행 ──
-    if st.button("백테스트 실행", type="primary", use_container_width=True):
+    run_triggered = st.button("백테스트 실행", type="primary", use_container_width=True)
+    pending_patch = st.session_state.pop("pending_patch", None)
+    pending_label = st.session_state.pop("pending_patch_label", "")
+
+    if run_triggered or pending_patch is not None:
         from aftertaxi.strategies.compile import compile_backtest_with_trace
 
-        cfg1, trace1 = compile_backtest_with_trace(draft1.to_dict())
+        payload = draft1.to_dict()
+
+        # pending_patch가 있으면 적용
+        if pending_patch is not None:
+            from aftertaxi.strategies.compile import apply_suggestion_patch
+            payload = apply_suggestion_patch(payload, pending_patch)
+            st.info(f"💡 **{pending_label}** 제안이 적용되었습니다.")
+
+        cfg1, trace1 = compile_backtest_with_trace(payload)
         all_assets = list(cfg1.strategy.weights.keys())
 
         cfg2 = None
