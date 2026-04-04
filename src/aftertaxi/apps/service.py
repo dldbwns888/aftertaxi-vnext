@@ -233,11 +233,23 @@ def run_validated_strategy(
     data_source: str = "synthetic",
     full_validation: bool = False,
     isa_optimize: bool = True,
+    mode: str = "research",  # "research" | "decision_support"
 ) -> ValidatedRunOutput:
     """검증 + 종합 판단 포함 전략 실행.
 
-    결과를 믿을 수 있는지, 세후 구조가 건강한지까지 답한다.
+    mode="research": 기본. 합성 허용, 경고만.
+    mode="decision_support": 보수적. 합성 경고 강화, validation 필수, strict compile.
     """
+    import warnings
+
+    if mode == "decision_support":
+        if data_source == "synthetic":
+            warnings.warn(
+                "decision_support 모드에서 합성 데이터 사용. "
+                "실제 데이터(yfinance)로 재검증을 강력히 권장합니다.",
+                UserWarning, stacklevel=2,
+            )
+        full_validation = True  # decision mode에서는 전체 검증 강제
     # 1. 일반 실행
     out = run_strategy(payload, returns, prices, fx_rates,
                        data_source=data_source, save_to_memory=True)
