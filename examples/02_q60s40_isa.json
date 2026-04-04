@@ -1,0 +1,8 @@
+{
+  "strategy": {"type": "q60s40"},
+  "accounts": [
+    {"type": "ISA", "monthly_contribution": 1000, "priority": 0},
+    {"type": "TAXABLE", "monthly_contribution": 500, "priority": 1}
+  ],
+  "n_months": 240
+}

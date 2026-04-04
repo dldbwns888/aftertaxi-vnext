@@ -348,6 +348,29 @@ def main():
 
         total_mo = sum(a.monthly or 0 for a in accounts)
 
+        # 실행 기록 저장
+        try:
+            from aftertaxi.apps.memory import ResearchMemory
+            from aftertaxi.advisor.builder import build_advisor_input
+            from aftertaxi.advisor.rules import run_advisor
+
+            memory = ResearchMemory()
+            adv_inp = build_advisor_input(r1, a1, cfg1)
+            adv_report = run_advisor(adv_inp)
+
+            memory.record(
+                config_json=draft1.to_json(),
+                gross_pv_usd=r1.gross_pv_usd,
+                net_pv_krw=r1.net_pv_krw,
+                tax_assessed_krw=r1.tax.total_assessed_krw,
+                mdd=r1.mdd,
+                n_months=r1.n_months,
+                name=f"{key1} {r1.n_months//12}yr",
+                advisor_summary=adv_report.summary,
+            )
+        except Exception:
+            pass  # 기록 실패해도 결과 표시는 진행
+
         # ══════════════════════════════════════
         # 결과 표시
         # ══════════════════════════════════════
@@ -449,6 +472,31 @@ def main():
                     st.text(grid.summary_text())
             with t_dbg:
                 st.json(draft1.to_dict())
+
+    # ══════════════════════════════════════
+    # 최근 실행 기록 (항상 표시)
+    # ══════════════════════════════════════
+    try:
+        from aftertaxi.apps.memory import ResearchMemory
+        memory = ResearchMemory()
+        recent = memory.list_runs(limit=10)
+        if recent:
+            st.divider()
+            with st.expander(f"📜 최근 실행 ({len(recent)}건)", expanded=False):
+                rows = []
+                for r in recent:
+                    rows.append({
+                        "ID": r.run_id,
+                        "이름": r.name,
+                        "시간": r.timestamp,
+                        "세후배수": f"{r.net_pv_krw / max(1, r.n_months * 1000 * 1300):.2f}x" if r.n_months > 0 else "-",
+                        "MDD": f"{r.mdd:.0%}" if r.mdd != 0 else "-",
+                        "세금": f"₩{r.tax_assessed_krw:,.0f}" if r.tax_assessed_krw > 0 else "-",
+                        "판정": r.advisor_summary[:30] if r.advisor_summary else "-",
+                    })
+                st.dataframe(rows, use_container_width=True, hide_index=True)
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

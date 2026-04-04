@@ -1,0 +1,5 @@
+{
+  "strategy": {"type": "q60s40"},
+  "accounts": [{"type": "TAXABLE", "monthly_contribution": 1000, "rebalance_mode": "BAND", "band_threshold_pct": 0.05}],
+  "n_months": 240
+}

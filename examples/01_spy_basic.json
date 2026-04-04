@@ -1,0 +1,5 @@
+{
+  "strategy": {"type": "spy_bnh"},
+  "accounts": [{"type": "TAXABLE", "monthly_contribution": 1000}],
+  "n_months": 240
+}

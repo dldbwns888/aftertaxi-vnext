@@ -1,0 +1,5 @@
+{
+  "strategy": {"type": "q60s40"},
+  "accounts": [{"type": "TAXABLE", "monthly_contribution": 1000, "progressive": true}],
+  "n_months": 240
+}
