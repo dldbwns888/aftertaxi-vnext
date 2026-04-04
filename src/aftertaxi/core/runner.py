@@ -42,12 +42,10 @@ def run_engine(
 ) -> EngineResult:
     """FX-only 백테스트 실행.
 
-    Parameters
-    ----------
-    config : BacktestConfig
-    prices : DataFrame, index=datetime, columns=assets, values=USD price
-    fx_rates : Series, index=datetime, values=USDKRW rate
-    journal : Optional[EventJournal], 이벤트 로그 (None이면 기록 안 함)
+    월 루프는 5개 step 함수로 분해:
+      _step_mark_to_market → _step_year_boundary → _step_dividends
+      → _step_deposit_and_rebalance → _step_record
+    순서 변경 금지. 의미론 변경 금지. 구조 추출만.
     """
     index = prices.index
     n = config.n_months if config.n_months else len(index) - config.start_index
@@ -71,10 +69,6 @@ def run_engine(
             progressive_threshold=ac.tax_config.progressive_threshold if is_taxable else 20_000_000.0,
         )
 
-    target_weights = config.strategy.weights
-    rebal_every = config.strategy.rebalance_every
-
-    # ── Allocation planner (priority 순 정렬 + cap/allowed 반영) ──
     planner = AllocationPlanner(config.accounts)
     total_contribution = sum(ac.monthly_contribution for ac in config.accounts)
 
@@ -90,81 +84,134 @@ def run_engine(
         price_map = {k: v for k, v in prices.iloc[i].to_dict().items() if v == v}
         fx_rate = _get_fx_rate(dt, fx_lookup)
 
-        # 1. 시가 반영
-        for ledger in ledgers.values():
-            ledger.mark_to_market(price_map)
+        _step_mark_to_market(ledgers, price_map)
 
-        # 2. 연도 전환 → 세금 정산 (settlement에 위임)
-        if current_year is not None and dt.year != current_year:
-            settle_year_end(ledgers, current_year, fx_rate,
-                           enable_health_insurance=config.enable_health_insurance)
-            # 연간 납입 리셋
-            for ledger in ledgers.values():
-                ledger.annual_contribution_usd = 0.0
-                ledger.annual_contribution_krw = 0.0
-            current_year = dt.year
+        current_year = _step_year_boundary(
+            ledgers, current_year, dt, fx_rate, config.enable_health_insurance)
 
-        # 2.5 배당 처리 (schedule이 있을 때만)
-        div_schedule = config.dividend_schedule
-        if div_schedule is not None and div_schedule.is_dividend_month(step):
-            for ledger in ledgers.values():
-                for asset in list(ledger.positions.keys()):
-                    event = div_schedule.create_event(asset, price_map.get(asset, 0))
-                    if event is not None:
-                        ledger.apply_dividend(
-                            asset=event.asset,
-                            gross_per_share=event.gross_per_share_usd,
-                            withholding_rate=event.withholding_rate,
-                            fx_rate=fx_rate,
-                            reinvest=event.reinvest,
-                            px_usd=price_map.get(asset, 0),
-                        )
+        _step_dividends(ledgers, config.dividend_schedule, step, price_map, fx_rate)
 
-        # 3~4. 입금 + 리밸런싱/매수 (AllocationPlanner에 위임)
-        ytd = {ac.account_id: ledgers[ac.account_id].annual_contribution_krw
-               for ac in config.accounts}
-        orders = planner.plan(
-            target_weights=target_weights,
+        _step_deposit_and_rebalance(
+            ledgers, planner, config.accounts,
+            target_weights=config.strategy.weights,
             total_contribution=total_contribution,
-            month_index=step,
-            rebalance_every=rebal_every,
-            ytd_contributions=ytd,
-            fx_rate=fx_rate,
-        )
+            step=step, rebal_every=config.strategy.rebalance_every,
+            price_map=price_map, fx_rate=fx_rate)
 
-        for order in orders:
-            ledger = ledgers[order.account_id]
+        _step_record(ledgers)
 
-            if order.deposit > 0:
-                ledger.deposit(order.deposit, fx_rate)
-
-            if order.rebalance_mode == RebalanceMode.FULL and order.should_rebalance:
-                _execute_full_rebalance(ledger, order.target_weights, price_map, fx_rate)
-            elif order.rebalance_mode == RebalanceMode.BAND and order.should_rebalance:
-                if _drift_exceeds_threshold(ledger, order.target_weights, price_map,
-                                             order.band_threshold_pct):
-                    _execute_full_rebalance(ledger, order.target_weights, price_map, fx_rate)
-                else:
-                    _execute_contribution_only(ledger, order.target_weights, price_map, fx_rate)
-            else:
-                _execute_contribution_only(ledger, order.target_weights, price_map, fx_rate)
-
-        # 5. 월말 기록
-        for ledger in ledgers.values():
-            ledger.record_month()
-
-    # ── 최종 청산 (settlement에 위임) ──
+    # ── 최종 청산 ──
     final_i = min(start + n - 1, len(index) - 1)
     final_dt = index[final_i]
     final_prices = {k: v for k, v in prices.iloc[final_i].to_dict().items() if v == v}
     final_fx = _get_fx_rate(final_dt, fx_lookup)
-    final_year = final_dt.year
 
-    settle_final(ledgers, final_year, final_prices, final_fx,
+    settle_final(ledgers, final_dt.year, final_prices, final_fx,
                  enable_health_insurance=config.enable_health_insurance)
 
-    # ── 결과 집계 ──
     return _aggregate(ledgers, final_fx)
+
+
+# ══════════════════════════════════════════════
+# Step 함수 (순서 변경 금지)
+# ══════════════════════════════════════════════
+
+def _step_mark_to_market(
+    ledgers: Dict[str, AccountLedger],
+    price_map: Dict[str, float],
+) -> None:
+    """1. 시가 반영."""
+    for ledger in ledgers.values():
+        ledger.mark_to_market(price_map)
+
+
+def _step_year_boundary(
+    ledgers: Dict[str, AccountLedger],
+    current_year: int,
+    dt: pd.Timestamp,
+    fx_rate: float,
+    enable_health_insurance: bool,
+) -> int:
+    """2. 연도 전환 → 세금 정산 + 납입 리셋. Returns: 갱신된 current_year."""
+    if current_year is not None and dt.year != current_year:
+        settle_year_end(ledgers, current_year, fx_rate,
+                       enable_health_insurance=enable_health_insurance)
+        for ledger in ledgers.values():
+            ledger.annual_contribution_usd = 0.0
+            ledger.annual_contribution_krw = 0.0
+        return dt.year
+    return current_year
+
+
+def _step_dividends(
+    ledgers: Dict[str, AccountLedger],
+    div_schedule,
+    step: int,
+    price_map: Dict[str, float],
+    fx_rate: float,
+) -> None:
+    """2.5. 배당 처리."""
+    if div_schedule is None or not div_schedule.is_dividend_month(step):
+        return
+    for ledger in ledgers.values():
+        for asset in list(ledger.positions.keys()):
+            event = div_schedule.create_event(asset, price_map.get(asset, 0))
+            if event is not None:
+                ledger.apply_dividend(
+                    asset=event.asset,
+                    gross_per_share=event.gross_per_share_usd,
+                    withholding_rate=event.withholding_rate,
+                    fx_rate=fx_rate,
+                    reinvest=event.reinvest,
+                    px_usd=price_map.get(asset, 0),
+                )
+
+
+def _step_deposit_and_rebalance(
+    ledgers: Dict[str, AccountLedger],
+    planner: AllocationPlanner,
+    accounts: list,
+    target_weights: Dict[str, float],
+    total_contribution: float,
+    step: int,
+    rebal_every: int,
+    price_map: Dict[str, float],
+    fx_rate: float,
+) -> None:
+    """3~4. 입금 + 리밸런싱/매수."""
+    ytd = {ac.account_id: ledgers[ac.account_id].annual_contribution_krw
+           for ac in accounts}
+    orders = planner.plan(
+        target_weights=target_weights,
+        total_contribution=total_contribution,
+        month_index=step,
+        rebalance_every=rebal_every,
+        ytd_contributions=ytd,
+        fx_rate=fx_rate,
+    )
+
+    for order in orders:
+        ledger = ledgers[order.account_id]
+
+        if order.deposit > 0:
+            ledger.deposit(order.deposit, fx_rate)
+
+        if order.rebalance_mode == RebalanceMode.FULL and order.should_rebalance:
+            _execute_full_rebalance(ledger, order.target_weights, price_map, fx_rate)
+        elif order.rebalance_mode == RebalanceMode.BAND and order.should_rebalance:
+            if _drift_exceeds_threshold(ledger, order.target_weights, price_map,
+                                         order.band_threshold_pct):
+                _execute_full_rebalance(ledger, order.target_weights, price_map, fx_rate)
+            else:
+                _execute_contribution_only(ledger, order.target_weights, price_map, fx_rate)
+        else:
+            _execute_contribution_only(ledger, order.target_weights, price_map, fx_rate)
+
+
+def _step_record(ledgers: Dict[str, AccountLedger]) -> None:
+    """5. 월말 기록."""
+    for ledger in ledgers.values():
+        ledger.record_month()
 
 
 def _build_fx_lookup(fx_rates: pd.Series) -> tuple:

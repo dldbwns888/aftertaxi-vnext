@@ -100,6 +100,7 @@ def _suggest(inp: AdvisorInput, diagnoses: List[Diagnosis]) -> List[SuggestionPa
                 {"type": "TAXABLE", "priority": 1},
             ]},
             rationale_codes=["NO_ISA", "HIGH_TAX_DRAG"],
+            priority=10,
         ))
 
     # BAND 리밸런싱
@@ -109,6 +110,7 @@ def _suggest(inp: AdvisorInput, diagnoses: List[Diagnosis]) -> List[SuggestionPa
             "BAND 리밸런싱으로 공제 분산 효과. 세금 ~12% 완화 가능.",
             patch={"accounts": [{"rebalance_mode": "BAND", "band_threshold_pct": 0.05}]},
             rationale_codes=["HIGH_TAX_DRAG"],
+            priority=20,
         ))
 
     # 누진세 모델링
@@ -118,6 +120,7 @@ def _suggest(inp: AdvisorInput, diagnoses: List[Diagnosis]) -> List[SuggestionPa
             "누진세 모델링 활성화 권장. 실제 세금 부담을 정확히 확인.",
             patch={"accounts": [{"progressive": True}]},
             rationale_codes=["PROGRESSIVE_NOT_MODELED"],
+            priority=30,
         ))
 
     # baseline 비교 (거의 항상)
@@ -127,10 +130,17 @@ def _suggest(inp: AdvisorInput, diagnoses: List[Diagnosis]) -> List[SuggestionPa
             "SPY 100% B&H와 비교하면 이 전략의 실제 가치를 확인할 수 있습니다.",
             patch={"strategy": {"type": "spy_bnh"}},
             rationale_codes=[],
+            priority=90,
         ))
 
-    # 최대 3개 제한
-    return suggestions[:3]
+    # dedup by kind + sort by priority + max 3
+    seen_kinds = set()
+    deduped = []
+    for s in sorted(suggestions, key=lambda x: x.priority):
+        if s.kind not in seen_kinds:
+            seen_kinds.add(s.kind)
+            deduped.append(s)
+    return deduped[:3]
 
 
 # ══════════════════════════════════════════════

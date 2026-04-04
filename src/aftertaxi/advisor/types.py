@@ -79,6 +79,7 @@ class SuggestionPatch:
     message: str                    # 한국어 제안
     patch: Dict = field(default_factory=dict)   # config에 적용할 변경
     rationale_codes: List[str] = field(default_factory=list)  # 근거 진단 코드
+    priority: int = 50             # 낮을수록 먼저 (0=최우선, 99=부가)
 
 
 # ══════════════════════════════════════════════

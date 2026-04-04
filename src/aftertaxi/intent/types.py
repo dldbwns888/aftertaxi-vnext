@@ -13,7 +13,10 @@ Intent는 애매함을 허용한다. Compile이 결정한다.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
+
+# rebalance_hint 허용값
+RebalanceHint = Literal["monthly", "drift_only", "minimal", "auto", None]
 
 
 @dataclass(frozen=True)
@@ -23,7 +26,7 @@ class StrategyIntent:
     assets_hint: Optional[List[str]] = None              # ["QQQ", "SSO"]
     weights_hint: Union[str, Dict[str, float], None] = None  # "6:4" 또는 {"QQQ": 0.6}
     strategy_type_hint: Optional[str] = None             # "bnh" | "momentum" | None
-    rebalance_hint: Optional[str] = None                 # "자주 말고" | "괴리 클 때만" | None
+    rebalance_hint: RebalanceHint = None              # "drift_only" | "monthly" | "minimal" | "auto"
     leverage_ok: bool = True
     params_hint: Dict[str, Any] = field(default_factory=dict)
 
