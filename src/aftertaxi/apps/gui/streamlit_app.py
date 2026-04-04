@@ -94,7 +94,7 @@ def _render_advisor_card(result, attribution, config):
 
     if report.suggestions:
         st.markdown("---")
-        st.subheader("개선 제안")
+        st.subheader("💡 개선 제안")
         for i, s in enumerate(report.suggestions):
             col_text, col_btn = st.columns([4, 1])
             with col_text:
@@ -143,6 +143,7 @@ def _render_enhanced_chart(result, total_monthly):
 
 
 def _render_tax_timeline(result):
+    """세금 추정 평균 (연도별 실제 데이터 아님)."""
     n_years = max(1, result.n_months // 12)
     cgt = sum(a.capital_gains_tax_krw for a in result.accounts)
     div = sum(a.dividend_tax_krw for a in result.accounts)
@@ -152,7 +153,8 @@ def _render_tax_timeline(result):
                         "건보료": [hi / n_years] * n_years},
                        index=[f"{i+1}년차" for i in range(n_years)])
     st.bar_chart(df, use_container_width=True)
-    st.caption(f"총 세금: ₩{cgt + div + hi:,.0f}")
+    st.caption(f"⚠ 연간 추정 평균입니다 (총 세금 ₩{cgt + div + hi:,.0f} ÷ {n_years}년). "
+               f"실제 연도별 분해는 analytics 업데이트 후 제공 예정.")
 
 
 def _render_comparison(r1, r2, l1, l2):
@@ -236,6 +238,8 @@ def main():
                     AccountDraft(type="ISA", monthly=float(monthly), priority=0),
                     AccountDraft(type="TAXABLE", monthly=0, priority=1),
                 ]
+                st.caption("💡 ISA에 전액 납입합니다 (연 한도 ₩2,000만). "
+                           "한도 초과분 자동 overflow는 고급 모드에서 2계좌 설정으로 가능합니다.")
             else:
                 accounts = [AccountDraft(type="TAXABLE", monthly=float(monthly), priority=0)]
         else:

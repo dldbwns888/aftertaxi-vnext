@@ -102,6 +102,7 @@ def _merge_tax_config(preset_tax: TaxConfig, override: dict) -> TaxConfig:
     from dataclasses import asdict
 
     base = asdict(preset_tax)
+    override = dict(override)  # 방어 복사 (caller의 dict 변형 방지)
     # "progressive": true 단축키 → KOREA_PROGRESSIVE_BRACKETS 주입
     if override.pop("progressive", False):
         from aftertaxi.core.contracts import KOREA_PROGRESSIVE_BRACKETS

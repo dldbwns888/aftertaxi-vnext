@@ -34,11 +34,12 @@ class AdvisorInput:
     tax_drag_pct: float
     n_months: int
 
-    # 계좌 구성 (bool만)
+    # 계좌 구성 (정제된 bool/요약)
     has_isa: bool = False
     has_progressive: bool = False
     n_accounts: int = 1
-    rebalance_mode: str = "CONTRIBUTION_ONLY"
+    has_band_account: bool = False          # BAND 쓰는 계좌가 하나라도 있는지
+    all_contribution_only: bool = True      # 전부 C/O인지
 
     # 검증 결과 (있으면)
     validation_grade: Optional[str] = None

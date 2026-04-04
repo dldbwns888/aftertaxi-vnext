@@ -45,6 +45,13 @@ def build_advisor_input(
         if baseline_mult > 0:
             baseline_gap = (result.mult_after_tax - baseline_mult) / baseline_mult * 100
 
+    has_band = any(
+        a.rebalance_mode.value == "BAND" for a in config.accounts
+    )
+    all_co = all(
+        a.rebalance_mode.value == "CONTRIBUTION_ONLY" for a in config.accounts
+    )
+
     return AdvisorInput(
         mult_after_tax=result.mult_after_tax,
         mdd=result.mdd,
@@ -53,7 +60,8 @@ def build_advisor_input(
         has_isa=has_isa,
         has_progressive=has_progressive,
         n_accounts=result.n_accounts,
-        rebalance_mode=config.accounts[0].rebalance_mode.value if config.accounts else "CONTRIBUTION_ONLY",
+        has_band_account=has_band,
+        all_contribution_only=all_co,
         validation_grade=validation_grade,
         lane_d_survival=lane_d_survival,
         baseline_mult=baseline_mult,

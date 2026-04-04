@@ -104,7 +104,7 @@ def _suggest(inp: AdvisorInput, diagnoses: List[Diagnosis]) -> List[SuggestionPa
         ))
 
     # BAND 리밸런싱
-    if "HIGH_TAX_DRAG" in codes and inp.rebalance_mode != "BAND":
+    if "HIGH_TAX_DRAG" in codes and not inp.has_band_account:
         suggestions.append(SuggestionPatch(
             "use_band",
             "BAND 리밸런싱으로 공제 분산 효과. 세금 ~12% 완화 가능.",
@@ -128,7 +128,7 @@ def _suggest(inp: AdvisorInput, diagnoses: List[Diagnosis]) -> List[SuggestionPa
         suggestions.append(SuggestionPatch(
             "compare_baseline",
             "SPY 100% B&H와 비교하면 이 전략의 실제 가치를 확인할 수 있습니다.",
-            patch={"strategy": {"type": "spy_bnh"}},
+            patch={"_action": "compare", "baseline": "spy_bnh"},  # strategy replace가 아님
             rationale_codes=[],
             priority=90,
         ))
