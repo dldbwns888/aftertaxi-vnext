@@ -464,18 +464,20 @@ def main():
 
         total_mo = sum(a.monthly or 0 for a in accounts)
 
-        # 실행 기록 저장
+        # 실행 기록 저장 (provenance 포함)
         try:
             from aftertaxi.apps.memory import ResearchMemory
             from aftertaxi.advisor.builder import build_advisor_input
             from aftertaxi.advisor.rules import run_advisor
+            from aftertaxi.apps.data_fingerprint import compute_fingerprint
 
             memory = ResearchMemory()
             adv_inp = build_advisor_input(r1, a1, cfg1)
             adv_report = run_advisor(adv_inp)
+            fp = compute_fingerprint(ret, fx)
 
             memory.record(
-                config_json=draft1.to_json(),
+                config_json=json.dumps(payload) if pending_patch else draft1.to_json(),
                 gross_pv_usd=r1.gross_pv_usd,
                 net_pv_krw=r1.net_pv_krw,
                 tax_assessed_krw=r1.tax.total_assessed_krw,
@@ -483,6 +485,8 @@ def main():
                 n_months=r1.n_months,
                 name=f"{key1} {r1.n_months//12}yr",
                 advisor_summary=adv_report.summary,
+                data_fingerprint=fp,
+                data_source=ds,
             )
         except Exception:
             pass  # 기록 실패해도 결과 표시는 진행

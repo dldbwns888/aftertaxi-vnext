@@ -45,6 +45,8 @@ class RunRecord:
     # 메타
     tags: str = ""              # 쉼표 구분
     advisor_summary: str = ""
+    data_fingerprint: str = ""  # sha256[:12] — 같은 데이터면 같은 값
+    data_source: str = ""       # "synthetic" | "yfinance" | ...
 
 
 class ResearchMemory:
@@ -70,9 +72,20 @@ class ResearchMemory:
                     mdd REAL DEFAULT 0,
                     n_months INTEGER DEFAULT 0,
                     tags TEXT DEFAULT '',
-                    advisor_summary TEXT DEFAULT ''
+                    advisor_summary TEXT DEFAULT '',
+                    data_fingerprint TEXT DEFAULT '',
+                    data_source TEXT DEFAULT ''
                 )
             """)
+            # 기존 DB 마이그레이션
+            try:
+                conn.execute("ALTER TABLE runs ADD COLUMN data_fingerprint TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass  # 이미 있음
+            try:
+                conn.execute("ALTER TABLE runs ADD COLUMN data_source TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
 
     def record(
         self,
@@ -85,6 +98,8 @@ class ResearchMemory:
         name: str = "",
         tags: str = "",
         advisor_summary: str = "",
+        data_fingerprint: str = "",
+        data_source: str = "",
     ) -> str:
         """실행 기록. Returns: run_id."""
         run_id = uuid.uuid4().hex[:8]
@@ -96,10 +111,10 @@ class ResearchMemory:
 
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (run_id, ts, name, config_hash, config_json,
                  gross_pv_usd, net_pv_krw, tax_assessed_krw, mdd, n_months,
-                 tags, advisor_summary),
+                 tags, advisor_summary, data_fingerprint, data_source),
             )
         return run_id
 
