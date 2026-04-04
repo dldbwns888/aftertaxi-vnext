@@ -1,0 +1,131 @@
+# -*- coding: utf-8 -*-
+"""
+apps/service.py — 앱 서비스 레이어
+===================================
+앱(GUI/CLI)이 코어를 직접 만지지 않게 하는 중간 계층.
+
+앱은 이 모듈만 import하면 됨:
+  from aftertaxi.apps.service import run_strategy, RunOutput
+
+앱이 몰라도 되는 것:
+  compile, facade, attribution, advisor, memory, fingerprint 내부
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
+
+import pandas as pd
+
+
+@dataclass
+class RunOutput:
+    """앱이 받는 실행 결과 전부."""
+    # 코어 결과
+    result: object          # EngineResult
+    attribution: object     # ResultAttribution
+    config: object          # BacktestConfig
+    trace: object           # CompileTrace
+
+    # Advisor
+    advisor_report: object  # AdvisorReport
+
+    # baseline (있으면)
+    baseline_result: Optional[object] = None
+
+    # provenance
+    data_source: str = ""
+    data_fingerprint: str = ""
+
+    # memory
+    run_id: str = ""
+
+
+def run_strategy(
+    payload: dict,
+    returns: pd.DataFrame,
+    prices: pd.DataFrame,
+    fx_rates: pd.Series,
+    data_source: str = "synthetic",
+    save_to_memory: bool = True,
+    run_baseline: bool = True,
+) -> RunOutput:
+    """전략 실행 — 앱의 단일 진입점.
+
+    compile → run → attribution → advisor → baseline → memory 전부 처리.
+    앱은 이 함수 하나만 호출하면 됨.
+    """
+    from aftertaxi.strategies.compile import compile_backtest_with_trace
+    from aftertaxi.core.facade import run_backtest
+    from aftertaxi.core.attribution import build_attribution
+    from aftertaxi.core.contracts import (
+        AccountConfig, AccountType, BacktestConfig as BTC, StrategyConfig as SC,
+    )
+    from aftertaxi.advisor.builder import build_advisor_input
+    from aftertaxi.advisor.rules import run_advisor
+    from aftertaxi.apps.data_fingerprint import compute_fingerprint
+
+    # 1. Compile
+    config, trace = compile_backtest_with_trace(payload)
+
+    # 2. Engine
+    result = run_backtest(config, returns=returns, prices=prices, fx_rates=fx_rates)
+    attribution = build_attribution(result)
+
+    # 3. Baseline (SPY B&H)
+    baseline_result = None
+    if run_baseline and "SPY" in prices.columns:
+        strategy_key = payload.get("strategy", {}).get("type", "")
+        if strategy_key != "spy_bnh":
+            try:
+                total_monthly = sum(a.monthly_contribution for a in config.accounts)
+                bl_cfg = BTC(
+                    accounts=[AccountConfig("bl", AccountType.TAXABLE, total_monthly)],
+                    strategy=SC("spy_bnh", {"SPY": 1.0}),
+                )
+                baseline_result = run_backtest(bl_cfg, returns=returns, prices=prices, fx_rates=fx_rates)
+            except Exception:
+                pass
+
+    # 4. Advisor
+    adv_input = build_advisor_input(result, attribution, config,
+                                     baseline_result=baseline_result)
+    advisor_report = run_advisor(adv_input)
+
+    # 5. Provenance
+    fp = compute_fingerprint(returns, fx_rates)
+
+    # 6. Memory
+    run_id = ""
+    if save_to_memory:
+        try:
+            import json
+            from aftertaxi.apps.memory import ResearchMemory
+            memory = ResearchMemory()
+            strategy_key = payload.get("strategy", {}).get("type", "unknown")
+            run_id = memory.record(
+                config_json=json.dumps(payload, ensure_ascii=False),
+                gross_pv_usd=result.gross_pv_usd,
+                net_pv_krw=result.net_pv_krw,
+                tax_assessed_krw=result.tax.total_assessed_krw,
+                mdd=result.mdd,
+                n_months=result.n_months,
+                name=f"{strategy_key} {result.n_months // 12}yr",
+                advisor_summary=advisor_report.summary,
+                data_fingerprint=fp,
+                data_source=data_source,
+            )
+        except Exception:
+            pass
+
+    return RunOutput(
+        result=result,
+        attribution=attribution,
+        config=config,
+        trace=trace,
+        advisor_report=advisor_report,
+        baseline_result=baseline_result,
+        data_source=data_source,
+        data_fingerprint=fp,
+        run_id=run_id,
+    )
