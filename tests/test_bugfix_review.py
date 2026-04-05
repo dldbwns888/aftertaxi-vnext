@@ -15,6 +15,12 @@ from aftertaxi.core.contracts import (
 )
 from aftertaxi.core.facade import run_backtest
 
+try:
+    import hmmlearn  # noqa: F401
+    HAS_HMMLEARN = True
+except ImportError:
+    HAS_HMMLEARN = False
+
 
 def _data(n=60, seed=42):
     rng = np.random.default_rng(seed)
@@ -113,6 +119,7 @@ class TestSensitivityAfterTax:
 # HMM 레짐 통계 성질
 # ══════════════════════════════════════════════
 
+@pytest.mark.skipif(not HAS_HMMLEARN, reason="hmmlearn not installed")
 class TestHMMStatistics:
 
     @pytest.fixture

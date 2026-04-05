@@ -5,6 +5,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
+try:
+    import hmmlearn  # noqa: F401
+    HAS_HMMLEARN = True
+except ImportError:
+    HAS_HMMLEARN = False
+
+_skip_hmm = pytest.mark.skipif(not HAS_HMMLEARN, reason="hmmlearn not installed")
+
 from aftertaxi.lanes.lane_d.synthetic import (
     SyntheticMarketConfig, generate_synthetic_paths, returns_to_prices,
 )
@@ -27,6 +35,7 @@ def source_returns():
     return pd.DataFrame({"SPY": spy, "QQQ": qqq}, index=idx)
 
 
+@_skip_hmm
 class TestHMMPaths:
 
     def test_basic_generation(self, source_returns):
@@ -85,6 +94,7 @@ class TestHMMPaths:
 
 class TestHMMvsSignFlip:
 
+    @_skip_hmm
     def test_mode_dispatch(self, source_returns):
         """mode 값에 따라 다른 알고리즘."""
         sf = SyntheticMarketConfig(n_paths=1, path_length_months=60,
@@ -112,6 +122,7 @@ class TestHMMvsSignFlip:
         assert config.mode == "sign_flip"
 
 
+@_skip_hmm
 class TestHMMRegimeCharacteristics:
 
     def test_two_regimes_detected(self, source_returns):

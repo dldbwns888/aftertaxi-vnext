@@ -330,11 +330,6 @@ class AccountLedger:
         return result.tax_krw
         # NOTE: annual_dividend_*는 settle_dividend_tax()에서 리셋 (순서 의존)
 
-        self._log("tax_assessed", amount_krw=result.tax_krw,
-                  metadata={"taxable_base": result.taxable_base_krw,
-                            "exemption_used": result.exemption_used_krw})
-        return result.tax_krw
-
     # ── ISA 만기 정산 ──
 
     def settle_isa(self) -> float:
