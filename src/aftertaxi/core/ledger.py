@@ -269,9 +269,12 @@ class AccountLedger:
         self.cumulative_dividend_withholding_usd += withholding_usd
 
         if reinvest and px_usd > 0:
-            # 재투자: net으로 같은 자산 매수 (fee 적용)
-            reinvest_qty = net_usd / px_usd
-            # 직접 position에 추가 (fee는 여기선 적용 안 함 — 배당 재투자는 별도)
+            # FIX: buy()가 transaction_cost_bps를 적용하므로,
+            # reinvest_qty 계산 시 fee를 미리 고려해야 현금 부족 분기에 안 빠짐.
+            # 이전 코드는 net_usd/px_usd로 qty를 계산했지만 buy()가 fee를 추가 요구해서
+            # 의도보다 적게 재투자되는 버그가 있었음.
+            effective_cost = net_usd / (1 + self.transaction_cost_bps / 10_000)
+            reinvest_qty = effective_cost / px_usd
             self.cash_usd += net_usd
             self.buy(asset, reinvest_qty, px_usd, fx_rate)
         else:
@@ -407,8 +410,17 @@ class AccountLedger:
     def settle_annual_tax(self, current_year: int = 0) -> float:
         """연말 양도세 정산. get → compute → apply 패턴.
 
-        직접 호출 시 하위 호환 유지 (settlement 경유 권장).
+        .. deprecated::
+            settlement.py가 get_cgt_inputs() → compute → apply_cgt_result()를
+            직접 중재하므로 이 convenience wrapper는 사용되지 않음.
+            새 코드에서는 settlement.settle_year_end()을 사용할 것.
         """
+        import warnings
+        warnings.warn(
+            "settle_annual_tax()는 dead code입니다. "
+            "settlement.settle_year_end()을 사용하세요.",
+            DeprecationWarning, stacklevel=2,
+        )
         from aftertaxi.core.tax_engine import compute_capital_gains_tax
         inputs = self.get_cgt_inputs(current_year)
         result = compute_capital_gains_tax(**inputs)
@@ -447,7 +459,19 @@ class AccountLedger:
     # ── ISA 만기 정산 ──
 
     def settle_isa(self) -> float:
-        """ISA 만기 정산. get → compute → apply 패턴."""
+        """ISA 만기 정산. get → compute → apply 패턴.
+
+        .. deprecated::
+            settlement.py가 get_isa_inputs() → compute → apply_isa_result()를
+            직접 중재하므로 이 wrapper는 사용되지 않음.
+            새 코드에서는 settlement.settle_final()을 사용할 것.
+        """
+        import warnings
+        warnings.warn(
+            "settle_isa()는 dead code입니다. "
+            "settlement.settle_final()을 사용하세요.",
+            DeprecationWarning, stacklevel=2,
+        )
         if self.isa_exempt_limit <= 0:
             return 0.0
         from aftertaxi.core.tax_engine import compute_isa_settlement
@@ -477,7 +501,19 @@ class AccountLedger:
     # ── 배당소득세 정산 ──
 
     def settle_dividend_tax(self, fx_rate: float) -> float:
-        """연간 배당소득세 정산. get → compute → apply 패턴."""
+        """연간 배당소득세 정산. get → compute → apply 패턴.
+
+        .. deprecated::
+            settlement.py가 get_dividend_tax_inputs() → compute →
+            apply_dividend_tax_result()를 직접 중재하므로 이 wrapper는 사용되지 않음.
+            새 코드에서는 settlement.settle_year_end()을 사용할 것.
+        """
+        import warnings
+        warnings.warn(
+            "settle_dividend_tax()는 dead code입니다. "
+            "settlement.settle_year_end()을 사용하세요.",
+            DeprecationWarning, stacklevel=2,
+        )
         if self.annual_dividend_gross_usd < AMOUNT_EPSILON_USD:
             return 0.0
         from aftertaxi.core.tax_engine import compute_dividend_tax

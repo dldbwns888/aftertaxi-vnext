@@ -79,6 +79,11 @@ class AllocationPlanner:
             monthly = min(acct.monthly_contribution, remaining)
 
             # annual_cap 확인 (KRW cap, KRW ytd → USD room)
+            # 의도된 동작: annual_cap은 KRW 기준(예: ISA 2천만 원)이고,
+            # monthly_contribution은 USD이므로 환율(fx_rate)로 변환.
+            # FX가 매월 변하면 같은 USD 납입액이라도 KRW 한도 대비
+            # 여유분이 달라짐 — 이는 실제 한국 ISA 제도와 일치하는 의도된 동작.
+            # (환율 상승 → 같은 USD가 더 큰 KRW → 더 빨리 한도 도달)
             if acct.annual_cap is not None and fx_rate > 0:
                 ytd_krw = ytd_contributions.get(acct.account_id, 0.0)
                 room_krw = max(0.0, acct.annual_cap - ytd_krw)

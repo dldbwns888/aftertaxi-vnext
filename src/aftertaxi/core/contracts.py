@@ -257,6 +257,36 @@ class EngineResult:
         return (self.net_pv_krw / self.reporting_fx_rate) / self.invested_usd
 
     @property
+    def true_pre_tax_mult(self) -> float:
+        """진정한 세전 배수: 세금을 한 번도 안 냈다면의 가상 PV / invested.
+
+        기존 mult_pre_tax는 이름과 달리 세금 납부 후 gross를 사용하므로
+        mult_after_tax와 수식이 동일(unpaid=0일 때).
+        이 프로퍼티는 total_paid_tax를 역으로 더해서 진짜 세전 가치를 복원.
+        """
+        if self.invested_usd <= 0 or self.reporting_fx_rate <= 0:
+            return 0.0
+        # gross_pv_usd는 이미 세금 납부로 줄어든 값.
+        # 총 납부 세금을 USD로 환산해서 더하면 세전 가치 복원.
+        paid_tax_usd = self.tax.total_paid_krw / self.reporting_fx_rate
+        return (self.gross_pv_usd + paid_tax_usd) / self.invested_usd
+
+    @property
+    def tax_cost_pct(self) -> float:
+        """세금이 세전 가치 대비 몇 %를 가져갔는지.
+
+        기존 tax_drag는 unpaid 기준이라 최종 청산 후 항상 0.
+        이 프로퍼티는 total_assessed(납부 포함) 기준으로 실제 세금 비용을 표시.
+        """
+        if self.reporting_fx_rate <= 0:
+            return 0.0
+        paid_tax_usd = self.tax.total_paid_krw / self.reporting_fx_rate
+        pre_tax_pv = self.gross_pv_usd + paid_tax_usd
+        if pre_tax_pv <= 0:
+            return 0.0
+        return paid_tax_usd / pre_tax_pv
+
+    @property
     def tax_drag(self) -> float:
         if self.gross_pv_krw <= 0:
             return 0.0

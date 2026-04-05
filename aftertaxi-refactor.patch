@@ -1,0 +1,2822 @@
+diff --git a/src/aftertaxi/apps/service.py b/src/aftertaxi/apps/service.py
+index 89ec2ce..ffbe0bf 100644
+--- a/src/aftertaxi/apps/service.py
++++ b/src/aftertaxi/apps/service.py
+@@ -1,442 +1,445 @@
+-# -*- coding: utf-8 -*-
+-"""
+-apps/service.py — 앱 서비스 레이어
+-===================================
+-앱(GUI/CLI)이 코어를 직접 만지지 않게 하는 중간 계층.
+-
+-앱은 이 모듈만 import하면 됨:
+-  from aftertaxi.apps.service import run_strategy, RunOutput
+-
+-앱이 몰라도 되는 것:
+-  compile, facade, attribution, advisor, memory, fingerprint 내부
+-"""
+-from __future__ import annotations
+-
+-from dataclasses import dataclass, field
+-from typing import Dict, List, Optional, TYPE_CHECKING
+-
+-import pandas as pd
+-
+-if TYPE_CHECKING:
+-    from aftertaxi.core.contracts import BacktestConfig, EngineResult
+-    from aftertaxi.core.attribution import ResultAttribution
+-    from aftertaxi.intent.plan import CompileTrace
+-    from aftertaxi.advisor.types import AdvisorReport
+-    from aftertaxi.experiments.fingerprint import DataProvenance
+-
+-
+-@dataclass
+-class RunOutput:
+-    """앱이 받는 실행 결과 전부. 타입이 명시적."""
+-    # 코어 결과
+-    result: EngineResult
+-    attribution: ResultAttribution
+-    config: BacktestConfig
+-    trace: CompileTrace
+-
+-    # Advisor
+-    advisor_report: AdvisorReport
+-
+-    # baseline (있으면)
+-    baseline_result: Optional[EngineResult] = None
+-
+-    # provenance (구조적 추적)
+-    provenance: Optional[DataProvenance] = None
+-
+-    # memory
+-    run_id: str = ""
+-
+-    # 분석 결과 (GUI/CLI가 직접 계산하지 않도록 service에서 제공)
+-    interpretation_text: str = ""               # analysis.interpret 결과
+-    krw_attribution: Optional[object] = None    # KrwAttributionReport
+-    tax_structure_report: Optional[object] = None  # TaxStructureReport
+-
+-    # 하위호환 프로퍼티
+-    @property
+-    def data_source(self) -> str:
+-        return self.provenance.source if self.provenance else ""
+-
+-    @property
+-    def data_fingerprint(self) -> str:
+-        return self.provenance.fingerprint if self.provenance else ""
+-
+-    @property
+-    def mult_after_tax(self) -> float:
+-        return self.result.mult_after_tax
+-
+-    @property
+-    def mdd(self) -> float:
+-        return self.result.mdd
+-
+-    @property
+-    def tax_drag_pct(self) -> float:
+-        return self.attribution.tax_drag_pct
+-
+-    @property
+-    def baseline_gap(self) -> Optional[float]:
+-        if self.baseline_result:
+-            return self.result.mult_after_tax - self.baseline_result.mult_after_tax
+-        return None
+-
+-
+-def run_strategy(
+-    payload: dict,
+-    returns: pd.DataFrame,
+-    prices: pd.DataFrame,
+-    fx_rates: pd.Series,
+-    data_source: str = "synthetic",
+-    save_to_memory: bool = True,
+-    run_baseline: bool = True,
+-) -> RunOutput:
+-    """전략 실행 — 앱의 단일 진입점.
+-
+-    compile → run → attribution → advisor → baseline → memory 전부 처리.
+-    앱은 이 함수 하나만 호출하면 됨.
+-    """
+-    from aftertaxi.strategies.compile import compile_backtest_with_trace
+-    from aftertaxi.core.facade import run_backtest
+-    from aftertaxi.core.attribution import build_attribution
+-    from aftertaxi.core.contracts import (
+-        AccountConfig, AccountType, BacktestConfig as BTC, StrategyConfig as SC,
+-    )
+-    from aftertaxi.advisor.builder import build_advisor_input
+-    from aftertaxi.advisor.rules import run_advisor
+-    from aftertaxi.apps.data_fingerprint import compute_fingerprint
+-
+-    # 1. Compile
+-    config, trace = compile_backtest_with_trace(payload)
+-
+-    # 2. Engine
+-    result = run_backtest(config, returns=returns, prices=prices, fx_rates=fx_rates)
+-    attribution = build_attribution(result)
+-
+-    # 3. Baseline (SPY B&H)
+-    baseline_result = None
+-    if run_baseline and "SPY" in prices.columns:
+-        strategy_key = payload.get("strategy", {}).get("type", "")
+-        if strategy_key != "spy_bnh":
+-            try:
+-                total_monthly = sum(a.monthly_contribution for a in config.accounts)
+-                bl_cfg = BTC(
+-                    accounts=[AccountConfig("bl", AccountType.TAXABLE, total_monthly)],
+-                    strategy=SC("spy_bnh", {"SPY": 1.0}),
+-                )
+-                baseline_result = run_backtest(bl_cfg, returns=returns, prices=prices, fx_rates=fx_rates)
+-            except Exception:
+-                pass
+-
+-    # 4. Advisor
+-    adv_input = build_advisor_input(result, attribution, config,
+-                                     baseline_result=baseline_result)
+-    advisor_report = run_advisor(adv_input)
+-
+-    # 5. Provenance (구조적 추적)
+-    from aftertaxi.experiments.fingerprint import DataProvenance as DP
+-    fp = compute_fingerprint(returns, fx_rates)
+-    provenance = DP(
+-        fingerprint=fp,
+-        source=data_source,
+-        assets=list(returns.columns),
+-        date_range=f"{returns.index[0]:%Y-%m}~{returns.index[-1]:%Y-%m}",
+-        n_months=len(returns),
+-        notes="synthetic" if data_source == "synthetic" else "",
+-    )
+-
+-    # 5.5. 분석 결과 (GUI가 직접 계산하지 않도록)
+-    interpretation_text = ""
+-    krw_report = None
+-    tax_report = None
+-    try:
+-        from aftertaxi.analysis.interpret import interpret_result
+-        interpretation_text = interpret_result(result, attribution)
+-    except Exception:
+-        pass
+-    try:
+-        from aftertaxi.analysis.krw_attribution import build_krw_attribution
+-        krw_report = build_krw_attribution(result)
+-    except Exception:
+-        pass
+-    try:
+-        from aftertaxi.analysis.tax_interpretation import interpret_tax_structure
+-        tax_report = interpret_tax_structure(result, config)
+-    except Exception:
+-        pass
+-
+-    # 6. Memory
+-    run_id = ""
+-    if save_to_memory:
+-        try:
+-            import json
+-            from aftertaxi.apps.memory import ResearchMemory
+-            memory = ResearchMemory()
+-            strategy_key = payload.get("strategy", {}).get("type", "unknown")
+-            run_id = memory.record(
+-                config_json=json.dumps(payload, ensure_ascii=False),
+-                gross_pv_usd=result.gross_pv_usd,
+-                net_pv_krw=result.net_pv_krw,
+-                tax_assessed_krw=result.tax.total_assessed_krw,
+-                mdd=result.mdd,
+-                n_months=result.n_months,
+-                name=f"{strategy_key} {result.n_months // 12}yr",
+-                advisor_summary=advisor_report.summary,
+-                data_fingerprint=fp,
+-                data_source=data_source,
+-            )
+-        except Exception:
+-            pass
+-
+-    return RunOutput(
+-        result=result,
+-        attribution=attribution,
+-        config=config,
+-        trace=trace,
+-        advisor_report=advisor_report,
+-        baseline_result=baseline_result,
+-        provenance=provenance,
+-        run_id=run_id,
+-        interpretation_text=interpretation_text,
+-        krw_attribution=krw_report,
+-        tax_structure_report=tax_report,
+-    )
+-
+-
+-@dataclass
+-class CompareOutput:
+-    """비교 결과."""
+-    outputs: List[RunOutput]
+-    rank_table: List[Dict]
+-    winner: str
+-    comparison_report: Optional[object] = None  # analysis.compare.ComparisonReport
+-
+-
+-def compare_strategies(
+-    payloads: List[dict],
+-    labels: List[str],
+-    returns: pd.DataFrame,
+-    prices: pd.DataFrame,
+-    fx_rates: pd.Series,
+-    data_source: str = "synthetic",
+-) -> CompareOutput:
+-    """여러 전략 비교 — 서비스 레이어.
+-
+-    payloads와 labels는 같은 길이. 같은 데이터로 전부 실행 후 순위.
+-    analysis.compare를 내부적으로 사용하여 통계 검정까지 수행.
+-    """
+-    outputs = []
+-    for payload in payloads:
+-        out = run_strategy(payload, returns, prices, fx_rates,
+-                           data_source=data_source, save_to_memory=False,
+-                           run_baseline=False)
+-        outputs.append(out)
+-
+-    # analysis.compare로 풍부한 비교 리포트 생성
+-    from aftertaxi.analysis.compare import compare_strategies as _compare_analysis
+-    engine_results = [out.result for out in outputs]
+-    comparison_report = _compare_analysis(engine_results, names=labels)
+-
+-    rank_table = comparison_report.rank_table()
+-    winner = comparison_report.winner
+-
+-    return CompareOutput(
+-        outputs=outputs,
+-        rank_table=rank_table,
+-        winner=winner,
+-        comparison_report=comparison_report,
+-    )
+-
+-
+-@dataclass
+-class ValidatedRunOutput:
+-    """검증 + 종합 판단 포함 실행 결과."""
+-    run: RunOutput
+-    validation_report: Optional[object] = None
+-    validation_grade: str = ""
+-    validation_passed: bool = True
+-    advisor_v2: Optional[object] = None  # AdvisorV2Report
+-
+-
+-def run_validated_strategy(
+-    payload: dict,
+-    returns: pd.DataFrame,
+-    prices: pd.DataFrame,
+-    fx_rates: pd.Series,
+-    data_source: str = "synthetic",
+-    full_validation: bool = False,
+-    isa_optimize: bool = True,
+-    mode: str = "research",  # "research" | "decision_support"
+-) -> ValidatedRunOutput:
+-    """검증 + 종합 판단 포함 전략 실행.
+-
+-    mode="research": 기본. 합성 허용, 경고만.
+-    mode="decision_support": 보수적. 합성 경고 강화, validation 필수, strict compile.
+-    """
+-    import warnings
+-
+-    if mode == "decision_support":
+-        if data_source == "synthetic":
+-            warnings.warn(
+-                "decision_support 모드에서 합성 데이터 사용. "
+-                "실제 데이터(yfinance)로 재검증을 강력히 권장합니다.",
+-                UserWarning, stacklevel=2,
+-            )
+-        full_validation = True  # decision mode에서는 전체 검증 강제
+-    # 1. 일반 실행
+-    out = run_strategy(payload, returns, prices, fx_rates,
+-                       data_source=data_source, save_to_memory=True)
+-
+-    # 2. 검증
+-    validation_report = None
+-    grade = ""
+-    passed = True
+-    try:
+-        import numpy as np
+-        from aftertaxi.validation import validate
+-
+-        mv = out.result.monthly_values
+-        if len(mv) > 1:
+-            monthly_returns = np.diff(mv) / mv[:-1]
+-            vr = validate(
+-                result=out.result,
+-                excess_returns=monthly_returns,
+-                strategy_name=payload.get("strategy", {}).get("type", "unknown"),
+-                full=full_validation,
+-            )
+-            validation_report = vr
+-            grade = vr.grade if hasattr(vr, "grade") else ""
+-            passed = vr.passed if hasattr(vr, "passed") else True
+-    except Exception:
+-        pass
+-
+-    # 3. Advisor 2.0 — 종합 판단
+-    advisor_v2_report = None
+-    try:
+-        from aftertaxi.analysis.krw_attribution import build_krw_attribution
+-        from aftertaxi.analysis.tax_interpretation import interpret_tax_structure
+-        from aftertaxi.advisor.advisor_v2 import build_advisor_v2
+-
+-        krw = build_krw_attribution(out.result)
+-        tax = interpret_tax_structure(out.result, out.config)
+-
+-        # ISA 최적화 (선택적)
+-        isa_report = None
+-        if isa_optimize:
+-            try:
+-                from aftertaxi.analysis.isa_optimizer import optimize_isa
+-                strategy_payload = payload.get("strategy", {})
+-                total_monthly = sum(a.monthly_contribution for a in out.config.accounts)
+-                isa_report = optimize_isa(
+-                    strategy_payload, total_monthly,
+-                    returns, prices, fx_rates,
+-                    isa_pct_range=[0, 0.5, 1.0],  # 빠른 3점 스캔
+-                )
+-            except Exception:
+-                pass
+-
+-        advisor_v2_report = build_advisor_v2(
+-            result=out.result,
+-            config=out.config,
+-            attribution=out.attribution,
+-            krw_report=krw,
+-            tax_report=tax,
+-            isa_report=isa_report,
+-            validation_report=validation_report,
+-            baseline_result=out.baseline_result,
+-        )
+-    except Exception:
+-        pass
+-
+-    return ValidatedRunOutput(
+-        run=out,
+-        validation_report=validation_report,
+-        validation_grade=grade,
+-        validation_passed=passed,
+-        advisor_v2=advisor_v2_report,
+-    )
+-
+-
+-# ══════════════════════════════════════════════
+-# 분석 서비스 (GUI/CLI가 직접 호출하던 것을 흡수)
+-# ══════════════════════════════════════════════
+-
+-def run_tax_savings(
+-    strategy_payload: dict,
+-    total_monthly: float,
+-    isa_ratio: float,
+-    returns: pd.DataFrame,
+-    prices: pd.DataFrame,
+-    fx_rates: pd.Series,
+-    n_months: Optional[int] = None,
+-):
+-    """ISA 절세 시뮬레이션 — 서비스 레이어.
+-
+-    Returns
+-    -------
+-    TaxSavingsReport
+-    """
+-    from aftertaxi.analysis.tax_savings import simulate_tax_savings
+-    return simulate_tax_savings(
+-        strategy_payload=strategy_payload,
+-        total_monthly=total_monthly,
+-        isa_ratio=isa_ratio,
+-        returns=returns,
+-        prices=prices,
+-        fx_rates=fx_rates,
+-        n_months=n_months,
+-    )
+-
+-
+-def run_sensitivity(
+-    strategy_payload: dict,
+-    n_months: int = 240,
+-    fx_rate: float = 1300.0,
+-    seed: int = 42,
+-    growth_range: Optional[List[float]] = None,
+-    vol_range: Optional[List[float]] = None,
+-):
+-    """민감도 히트맵 — 서비스 레이어.
+-
+-    Returns
+-    -------
+-    SensitivityGrid
+-    """
+-    from aftertaxi.analysis.sensitivity import run_sensitivity as _sens
+-    return _sens(
+-        strategy_payload=strategy_payload,
+-        growth_range=growth_range,
+-        vol_range=vol_range,
+-        n_months=n_months,
+-        fx_rate=fx_rate,
+-        seed=seed,
+-    )
+-
+-
+-def run_lane_d(
+-    source_returns: pd.DataFrame,
+-    backtest_payload: dict,
+-    n_paths: int = 100,
+-    actual_result=None,
+-    n_jobs: int = 1,
+-):
+-    """Lane D 합성 장기 생존 시뮬레이션 — 서비스 레이어.
+-
+-    payload를 받아서 compile까지 처리한 뒤 lane_d에 넘긴다.
+-    앱은 compile을 직접 만질 필요 없음.
+-
+-    Returns
+-    -------
+-    SyntheticSurvivalReport
+-    """
+-    from aftertaxi.strategies.compile import compile_backtest
+-    from aftertaxi.lanes.lane_d.run import run_lane_d as _lane_d
+-    from aftertaxi.lanes.lane_d.synthetic import SyntheticMarketConfig
+-
+-    config = compile_backtest(backtest_payload)
+-    synthetic_config = SyntheticMarketConfig(n_paths=n_paths)
+-
+-    return _lane_d(
+-        source_returns=source_returns,
+-        backtest_config=config,
+-        synthetic_config=synthetic_config,
+-        actual_result=actual_result,
+-        n_jobs=n_jobs,
+-    )
++# -*- coding: utf-8 -*-
++"""
++apps/service.py — 앱 서비스 레이어
++===================================
++앱(GUI/CLI)이 코어를 직접 만지지 않게 하는 중간 계층.
++
++앱은 이 모듈만 import하면 됨:
++  from aftertaxi.apps.service import run_strategy, RunOutput
++
++앱이 몰라도 되는 것:
++  compile, facade, attribution, advisor, memory, fingerprint 내부
++"""
++from __future__ import annotations
++
++import logging
++from dataclasses import dataclass, field
++from typing import Dict, List, Optional, TYPE_CHECKING
++
++import pandas as pd
++
++logger = logging.getLogger(__name__)
++
++if TYPE_CHECKING:
++    from aftertaxi.core.contracts import BacktestConfig, EngineResult
++    from aftertaxi.core.attribution import ResultAttribution
++    from aftertaxi.intent.plan import CompileTrace
++    from aftertaxi.advisor.types import AdvisorReport
++    from aftertaxi.experiments.fingerprint import DataProvenance
++
++
++@dataclass
++class RunOutput:
++    """앱이 받는 실행 결과 전부. 타입이 명시적."""
++    # 코어 결과
++    result: EngineResult
++    attribution: ResultAttribution
++    config: BacktestConfig
++    trace: CompileTrace
++
++    # Advisor
++    advisor_report: AdvisorReport
++
++    # baseline (있으면)
++    baseline_result: Optional[EngineResult] = None
++
++    # provenance (구조적 추적)
++    provenance: Optional[DataProvenance] = None
++
++    # memory
++    run_id: str = ""
++
++    # 분석 결과 (GUI/CLI가 직접 계산하지 않도록 service에서 제공)
++    interpretation_text: str = ""               # analysis.interpret 결과
++    krw_attribution: Optional[object] = None    # KrwAttributionReport
++    tax_structure_report: Optional[object] = None  # TaxStructureReport
++
++    # 하위호환 프로퍼티
++    @property
++    def data_source(self) -> str:
++        return self.provenance.source if self.provenance else ""
++
++    @property
++    def data_fingerprint(self) -> str:
++        return self.provenance.fingerprint if self.provenance else ""
++
++    @property
++    def mult_after_tax(self) -> float:
++        return self.result.mult_after_tax
++
++    @property
++    def mdd(self) -> float:
++        return self.result.mdd
++
++    @property
++    def tax_drag_pct(self) -> float:
++        return self.attribution.tax_drag_pct
++
++    @property
++    def baseline_gap(self) -> Optional[float]:
++        if self.baseline_result:
++            return self.result.mult_after_tax - self.baseline_result.mult_after_tax
++        return None
++
++
++def run_strategy(
++    payload: dict,
++    returns: pd.DataFrame,
++    prices: pd.DataFrame,
++    fx_rates: pd.Series,
++    data_source: str = "synthetic",
++    save_to_memory: bool = True,
++    run_baseline: bool = True,
++) -> RunOutput:
++    """전략 실행 — 앱의 단일 진입점.
++
++    compile → run → attribution → advisor → baseline → memory 전부 처리.
++    앱은 이 함수 하나만 호출하면 됨.
++    """
++    from aftertaxi.strategies.compile import compile_backtest_with_trace
++    from aftertaxi.core.facade import run_backtest
++    from aftertaxi.core.attribution import build_attribution
++    from aftertaxi.core.contracts import (
++        AccountConfig, AccountType, BacktestConfig as BTC, StrategyConfig as SC,
++    )
++    from aftertaxi.advisor.builder import build_advisor_input
++    from aftertaxi.advisor.rules import run_advisor
++    from aftertaxi.apps.data_fingerprint import compute_fingerprint
++
++    # 1. Compile
++    config, trace = compile_backtest_with_trace(payload)
++
++    # 2. Engine
++    result = run_backtest(config, returns=returns, prices=prices, fx_rates=fx_rates)
++    attribution = build_attribution(result)
++
++    # 3. Baseline (SPY B&H)
++    baseline_result = None
++    if run_baseline and "SPY" in prices.columns:
++        strategy_key = payload.get("strategy", {}).get("type", "")
++        if strategy_key != "spy_bnh":
++            try:
++                total_monthly = sum(a.monthly_contribution for a in config.accounts)
++                bl_cfg = BTC(
++                    accounts=[AccountConfig("bl", AccountType.TAXABLE, total_monthly)],
++                    strategy=SC("spy_bnh", {"SPY": 1.0}),
++                )
++                baseline_result = run_backtest(bl_cfg, returns=returns, prices=prices, fx_rates=fx_rates)
++            except Exception:
++                logger.warning("baseline 실행 실패", exc_info=True)
++
++    # 4. Advisor
++    adv_input = build_advisor_input(result, attribution, config,
++                                     baseline_result=baseline_result)
++    advisor_report = run_advisor(adv_input)
++
++    # 5. Provenance (구조적 추적)
++    from aftertaxi.experiments.fingerprint import DataProvenance as DP
++    fp = compute_fingerprint(returns, fx_rates)
++    provenance = DP(
++        fingerprint=fp,
++        source=data_source,
++        assets=list(returns.columns),
++        date_range=f"{returns.index[0]:%Y-%m}~{returns.index[-1]:%Y-%m}",
++        n_months=len(returns),
++        notes="synthetic" if data_source == "synthetic" else "",
++    )
++
++    # 5.5. 분석 결과 (GUI가 직접 계산하지 않도록)
++    interpretation_text = ""
++    krw_report = None
++    tax_report = None
++    try:
++        from aftertaxi.analysis.interpret import interpret_result
++        interpretation_text = interpret_result(result, attribution)
++    except Exception:
++        logger.warning("interpret_result 실패", exc_info=True)
++    try:
++        from aftertaxi.analysis.krw_attribution import build_krw_attribution
++        krw_report = build_krw_attribution(result)
++    except Exception:
++        logger.warning("build_krw_attribution 실패", exc_info=True)
++    try:
++        from aftertaxi.analysis.tax_interpretation import interpret_tax_structure
++        tax_report = interpret_tax_structure(result, config)
++    except Exception:
++        logger.warning("interpret_tax_structure 실패", exc_info=True)
++
++    # 6. Memory
++    run_id = ""
++    if save_to_memory:
++        try:
++            import json
++            from aftertaxi.apps.memory import ResearchMemory
++            memory = ResearchMemory()
++            strategy_key = payload.get("strategy", {}).get("type", "unknown")
++            run_id = memory.record(
++                config_json=json.dumps(payload, ensure_ascii=False),
++                gross_pv_usd=result.gross_pv_usd,
++                net_pv_krw=result.net_pv_krw,
++                tax_assessed_krw=result.tax.total_assessed_krw,
++                mdd=result.mdd,
++                n_months=result.n_months,
++                name=f"{strategy_key} {result.n_months // 12}yr",
++                advisor_summary=advisor_report.summary,
++                data_fingerprint=fp,
++                data_source=data_source,
++            )
++        except Exception:
++            logger.warning("memory.record 실패 — 실행 기록 유실 가능", exc_info=True)
++
++    return RunOutput(
++        result=result,
++        attribution=attribution,
++        config=config,
++        trace=trace,
++        advisor_report=advisor_report,
++        baseline_result=baseline_result,
++        provenance=provenance,
++        run_id=run_id,
++        interpretation_text=interpretation_text,
++        krw_attribution=krw_report,
++        tax_structure_report=tax_report,
++    )
++
++
++@dataclass
++class CompareOutput:
++    """비교 결과."""
++    outputs: List[RunOutput]
++    rank_table: List[Dict]
++    winner: str
++    comparison_report: Optional[object] = None  # analysis.compare.ComparisonReport
++
++
++def compare_strategies(
++    payloads: List[dict],
++    labels: List[str],
++    returns: pd.DataFrame,
++    prices: pd.DataFrame,
++    fx_rates: pd.Series,
++    data_source: str = "synthetic",
++) -> CompareOutput:
++    """여러 전략 비교 — 서비스 레이어.
++
++    payloads와 labels는 같은 길이. 같은 데이터로 전부 실행 후 순위.
++    analysis.compare를 내부적으로 사용하여 통계 검정까지 수행.
++    """
++    outputs = []
++    for payload in payloads:
++        out = run_strategy(payload, returns, prices, fx_rates,
++                           data_source=data_source, save_to_memory=False,
++                           run_baseline=False)
++        outputs.append(out)
++
++    # analysis.compare로 풍부한 비교 리포트 생성
++    from aftertaxi.analysis.compare import compare_strategies as _compare_analysis
++    engine_results = [out.result for out in outputs]
++    comparison_report = _compare_analysis(engine_results, names=labels)
++
++    rank_table = comparison_report.rank_table()
++    winner = comparison_report.winner
++
++    return CompareOutput(
++        outputs=outputs,
++        rank_table=rank_table,
++        winner=winner,
++        comparison_report=comparison_report,
++    )
++
++
++@dataclass
++class ValidatedRunOutput:
++    """검증 + 종합 판단 포함 실행 결과."""
++    run: RunOutput
++    validation_report: Optional[object] = None
++    validation_grade: str = ""
++    validation_passed: bool = True
++    advisor_v2: Optional[object] = None  # AdvisorV2Report
++
++
++def run_validated_strategy(
++    payload: dict,
++    returns: pd.DataFrame,
++    prices: pd.DataFrame,
++    fx_rates: pd.Series,
++    data_source: str = "synthetic",
++    full_validation: bool = False,
++    isa_optimize: bool = True,
++    mode: str = "research",  # "research" | "decision_support"
++) -> ValidatedRunOutput:
++    """검증 + 종합 판단 포함 전략 실행.
++
++    mode="research": 기본. 합성 허용, 경고만.
++    mode="decision_support": 보수적. 합성 경고 강화, validation 필수, strict compile.
++    """
++    import warnings
++
++    if mode == "decision_support":
++        if data_source == "synthetic":
++            warnings.warn(
++                "decision_support 모드에서 합성 데이터 사용. "
++                "실제 데이터(yfinance)로 재검증을 강력히 권장합니다.",
++                UserWarning, stacklevel=2,
++            )
++        full_validation = True  # decision mode에서는 전체 검증 강제
++    # 1. 일반 실행
++    out = run_strategy(payload, returns, prices, fx_rates,
++                       data_source=data_source, save_to_memory=True)
++
++    # 2. 검증
++    validation_report = None
++    grade = ""
++    passed = True
++    try:
++        import numpy as np
++        from aftertaxi.validation import validate
++
++        mv = out.result.monthly_values
++        if len(mv) > 1:
++            monthly_returns = np.diff(mv) / mv[:-1]
++            vr = validate(
++                result=out.result,
++                excess_returns=monthly_returns,
++                strategy_name=payload.get("strategy", {}).get("type", "unknown"),
++                full=full_validation,
++            )
++            validation_report = vr
++            grade = vr.grade if hasattr(vr, "grade") else ""
++            passed = vr.passed if hasattr(vr, "passed") else True
++    except Exception:
++        logger.warning("validation 실행 실패", exc_info=True)
++
++    # 3. Advisor 2.0 — 종합 판단
++    advisor_v2_report = None
++    try:
++        from aftertaxi.analysis.krw_attribution import build_krw_attribution
++        from aftertaxi.analysis.tax_interpretation import interpret_tax_structure
++        from aftertaxi.advisor.advisor_v2 import build_advisor_v2
++
++        krw = build_krw_attribution(out.result)
++        tax = interpret_tax_structure(out.result, out.config)
++
++        # ISA 최적화 (선택적)
++        isa_report = None
++        if isa_optimize:
++            try:
++                from aftertaxi.analysis.isa_optimizer import optimize_isa
++                strategy_payload = payload.get("strategy", {})
++                total_monthly = sum(a.monthly_contribution for a in out.config.accounts)
++                isa_report = optimize_isa(
++                    strategy_payload, total_monthly,
++                    returns, prices, fx_rates,
++                    isa_pct_range=[0, 0.5, 1.0],  # 빠른 3점 스캔
++                )
++            except Exception:
++                logger.warning("ISA 최적화 실패", exc_info=True)
++
++        advisor_v2_report = build_advisor_v2(
++            result=out.result,
++            config=out.config,
++            attribution=out.attribution,
++            krw_report=krw,
++            tax_report=tax,
++            isa_report=isa_report,
++            validation_report=validation_report,
++            baseline_result=out.baseline_result,
++        )
++    except Exception:
++        logger.warning("advisor_v2 빌드 실패", exc_info=True)
++
++    return ValidatedRunOutput(
++        run=out,
++        validation_report=validation_report,
++        validation_grade=grade,
++        validation_passed=passed,
++        advisor_v2=advisor_v2_report,
++    )
++
++
++# ══════════════════════════════════════════════
++# 분석 서비스 (GUI/CLI가 직접 호출하던 것을 흡수)
++# ══════════════════════════════════════════════
++
++def run_tax_savings(
++    strategy_payload: dict,
++    total_monthly: float,
++    isa_ratio: float,
++    returns: pd.DataFrame,
++    prices: pd.DataFrame,
++    fx_rates: pd.Series,
++    n_months: Optional[int] = None,
++):
++    """ISA 절세 시뮬레이션 — 서비스 레이어.
++
++    Returns
++    -------
++    TaxSavingsReport
++    """
++    from aftertaxi.analysis.tax_savings import simulate_tax_savings
++    return simulate_tax_savings(
++        strategy_payload=strategy_payload,
++        total_monthly=total_monthly,
++        isa_ratio=isa_ratio,
++        returns=returns,
++        prices=prices,
++        fx_rates=fx_rates,
++        n_months=n_months,
++    )
++
++
++def run_sensitivity(
++    strategy_payload: dict,
++    n_months: int = 240,
++    fx_rate: float = 1300.0,
++    seed: int = 42,
++    growth_range: Optional[List[float]] = None,
++    vol_range: Optional[List[float]] = None,
++):
++    """민감도 히트맵 — 서비스 레이어.
++
++    Returns
++    -------
++    SensitivityGrid
++    """
++    from aftertaxi.analysis.sensitivity import run_sensitivity as _sens
++    return _sens(
++        strategy_payload=strategy_payload,
++        growth_range=growth_range,
++        vol_range=vol_range,
++        n_months=n_months,
++        fx_rate=fx_rate,
++        seed=seed,
++    )
++
++
++def run_lane_d(
++    source_returns: pd.DataFrame,
++    backtest_payload: dict,
++    n_paths: int = 100,
++    actual_result=None,
++    n_jobs: int = 1,
++):
++    """Lane D 합성 장기 생존 시뮬레이션 — 서비스 레이어.
++
++    payload를 받아서 compile까지 처리한 뒤 lane_d에 넘긴다.
++    앱은 compile을 직접 만질 필요 없음.
++
++    Returns
++    -------
++    SyntheticSurvivalReport
++    """
++    from aftertaxi.strategies.compile import compile_backtest
++    from aftertaxi.lanes.lane_d.run import run_lane_d as _lane_d
++    from aftertaxi.lanes.lane_d.synthetic import SyntheticMarketConfig
++
++    config = compile_backtest(backtest_payload)
++    synthetic_config = SyntheticMarketConfig(n_paths=n_paths)
++
++    return _lane_d(
++        source_returns=source_returns,
++        backtest_config=config,
++        synthetic_config=synthetic_config,
++        actual_result=actual_result,
++        n_jobs=n_jobs,
++    )
+diff --git a/src/aftertaxi/core/constants.py b/src/aftertaxi/core/constants.py
+new file mode 100644
+index 0000000..14c182c
+--- /dev/null
++++ b/src/aftertaxi/core/constants.py
+@@ -0,0 +1,35 @@
++# -*- coding: utf-8 -*-
++"""
++core/constants.py — 엔진 전역 상수
++====================================
++매직 넘버를 이름과 의미가 있는 상수로 정의.
++
++이 상수들은 부동소수점 비교에서 "0인지 아닌지"를 판단하는 epsilon.
++값을 변경하면 세금 계산, 거래 실행, 배당 처리 전체에 영향.
++
++사용 규칙:
++  - 수량(qty) 비교: QTY_EPSILON
++  - USD 금액 비교: AMOUNT_EPSILON_USD
++  - KRW 금액 비교: AMOUNT_EPSILON_KRW
++  - 포트폴리오 대비 최소 거래: DUST_PCT
++"""
++
++# ── 수량 epsilon ──
++# 1주의 1조분의 1. fractional share 시뮬레이션에서 0으로 간주하는 최소 수량.
++# Position.avg_cost, buy, sell, liquidate, mark_to_market에서 사용.
++QTY_EPSILON = 1e-12
++
++# ── 금액 epsilon (USD) ──
++# USD 0.00000001. 현금 부족 판단, 배당 존재 여부, 건보료/세금 납부 임계값.
++# 매우 작은 양도 "존재"로 볼 수 있으므로 1e-8로 설정.
++AMOUNT_EPSILON_USD = 1e-8
++
++# ── 금액 epsilon (KRW) ──
++# KRW 0.000001. 이월결손금 유효성, 세금 반올림 판단.
++# KRW는 원 단위 정수이므로 1e-6이면 실질적으로 0.
++AMOUNT_EPSILON_KRW = 1e-6
++
++# ── 최소 거래 비율 ──
++# 포트폴리오 가치 대비 이 비율 미만인 거래는 무시 (0.1%).
++# 리밸런싱 시 먼지 거래 방지.
++DUST_PCT = 0.001
+diff --git a/src/aftertaxi/core/contracts.py b/src/aftertaxi/core/contracts.py
+index 85b0dd6..c156f84 100644
+--- a/src/aftertaxi/core/contracts.py
++++ b/src/aftertaxi/core/contracts.py
+@@ -19,6 +19,7 @@ from typing import Dict, List, Literal, Optional, TYPE_CHECKING
+ 
+ if TYPE_CHECKING:
+     from aftertaxi.core.dividend import DividendSchedule
++    from aftertaxi.core.ledger import AnnualTaxRecord
+ 
+ import numpy as np
+ 
+@@ -219,8 +220,7 @@ class EngineResult:
+     monthly_values: np.ndarray  # 월별 합산 PV (USD)
+ 
+     # ── 연도별 세금 분해 ──
+-    annual_tax_history: List[Dict] = field(default_factory=list)
+-    # [{year, cgt_krw, dividend_tax_krw, health_insurance_krw, total_krw}, ...]
++    annual_tax_history: List["AnnualTaxRecord"] = field(default_factory=list)
+ 
+     def __post_init__(self):
+         """생성 시 불변식 검증."""
+diff --git a/src/aftertaxi/core/engine_steps.py b/src/aftertaxi/core/engine_steps.py
+new file mode 100644
+index 0000000..f5261c5
+--- /dev/null
++++ b/src/aftertaxi/core/engine_steps.py
+@@ -0,0 +1,375 @@
++# -*- coding: utf-8 -*-
++"""
++engine_steps.py — 백테스트 엔진 빌딩 블록
++==========================================
++runner.py와 signal_runner.py가 공유하는 재사용 가능한 부품.
++
++이전에 runner.py의 private 함수였으나,
++signal_runner 등 다른 실행기가 의존하므로 public 모듈로 승격.
++
++이 모듈의 함수는 public API — 시그니처 변경 시 signal_runner 영향 고려.
++runner 내부 전용 로직은 runner.py에 남겨둔다.
++"""
++from __future__ import annotations
++
++import bisect
++import warnings
++from typing import Dict, List, Optional
++
++import numpy as np
++import pandas as pd
++
++from aftertaxi.core.contracts import (
++    AccountConfig, AccountSummary, AccountType, BacktestConfig,
++    EngineResult, PersonSummary, RebalanceMode, TaxSummary,
++)
++from aftertaxi.core.ledger import AccountLedger, TaxSnapshot
++from aftertaxi.core.settlement import settle_year_end
++from aftertaxi.core.constants import QTY_EPSILON, AMOUNT_EPSILON_USD, DUST_PCT
++
++
++# ══════════════════════════════════════════════
++# 팩토리 / 인프라
++# ══════════════════════════════════════════════
++
++def create_ledgers(
++    config: BacktestConfig,
++    journal=None,
++) -> Dict[str, AccountLedger]:
++    """AccountConfig 리스트 → AccountLedger dict. 팩토리 함수.
++
++    runner와 signal_runner가 공유. 계좌 생성 로직의 단일 소스.
++    """
++    ledgers: Dict[str, AccountLedger] = {}
++    for ac in config.accounts:
++        is_taxable = ac.account_type == AccountType.TAXABLE
++        ledgers[ac.account_id] = AccountLedger(
++            account_id=ac.account_id,
++            account_type=ac.account_type.value,
++            tax_rate=ac.tax_config.capital_gains_rate if is_taxable else 0.0,
++            annual_exemption=ac.tax_config.annual_exemption if is_taxable else 0.0,
++            isa_exempt_limit=ac.tax_config.isa_exempt_limit if ac.account_type == AccountType.ISA else 0.0,
++            isa_excess_rate=ac.tax_config.capital_gains_rate if ac.account_type == AccountType.ISA else 0.0,
++            transaction_cost_bps=ac.transaction_cost_bps,
++            journal=journal,
++            progressive_brackets=ac.tax_config.progressive_brackets if is_taxable else None,
++            progressive_threshold=ac.tax_config.progressive_threshold if is_taxable else 20_000_000.0,
++        )
++    return ledgers
++
++
++def build_fx_lookup(fx_rates: pd.Series) -> tuple:
++    """환율 Series → (dict, sorted_dates) 사전 구축. O(n) 1회."""
++    fx_dict = {ts: float(v) for ts, v in fx_rates.items()}
++    sorted_dates = sorted(fx_dict.keys())
++    return fx_dict, sorted_dates
++
++
++def get_fx_rate(dt: pd.Timestamp, fx_lookup: tuple) -> float:
++    """O(1) dict lookup + O(log n) bisect fallback."""
++    fx_dict, sorted_dates = fx_lookup
++    if dt in fx_dict:
++        return fx_dict[dt]
++    idx = bisect.bisect_right(sorted_dates, dt) - 1
++    if idx >= 0:
++        return fx_dict[sorted_dates[idx]]
++    return fx_dict[sorted_dates[0]]
++
++
++# ══════════════════════════════════════════════
++# 세금 스냅샷 헬퍼
++# ══════════════════════════════════════════════
++
++def snapshot_tax(ledgers: Dict[str, AccountLedger]) -> TaxSnapshot:
++    """전 계좌 세금 누적액 스냅샷. 정산 전후 비교용."""
++    return TaxSnapshot(
++        cgt_krw=sum(l.tax_snapshot().cgt_krw for l in ledgers.values()),
++        dividend_tax_krw=sum(l.tax_snapshot().dividend_tax_krw for l in ledgers.values()),
++        health_insurance_krw=sum(l.tax_snapshot().health_insurance_krw for l in ledgers.values()),
++    )
++
++
++def record_tax_delta(
++    annual_tax_history: list,
++    before: TaxSnapshot,
++    after: TaxSnapshot,
++    year: int,
++) -> None:
++    """정산 전후 차이를 annual_tax_history에 기록.
++
++    같은 연도 entry가 이미 있으면 합산, 없으면 추가.
++    """
++    delta = after.diff(before, year)
++    if delta.total_krw <= 0:
++        return
++    existing = [h for h in annual_tax_history if h["year"] == year]
++    if existing:
++        existing[0].cgt_krw += delta.cgt_krw
++        existing[0].dividend_tax_krw += delta.dividend_tax_krw
++        existing[0].health_insurance_krw += delta.health_insurance_krw
++        existing[0].total_krw += delta.total_krw
++    else:
++        annual_tax_history.append(delta)
++
++
++# ══════════════════════════════════════════════
++# Step 함수 (월 루프 구성 요소)
++# ══════════════════════════════════════════════
++
++def step_mark_to_market(
++    ledgers: Dict[str, AccountLedger],
++    price_map: Dict[str, float],
++) -> None:
++    """1. 시가 반영."""
++    for ledger in ledgers.values():
++        ledger.mark_to_market(price_map)
++
++
++def step_year_boundary(
++    ledgers: Dict[str, AccountLedger],
++    current_year: int,
++    dt: pd.Timestamp,
++    fx_rate: float,
++    enable_health_insurance: bool,
++) -> tuple:
++    """2. 연도 전환 → 세금 정산. Returns: (갱신된 year, tax_snapshot or None)."""
++    if current_year is not None and dt.year != current_year:
++        before = snapshot_tax(ledgers)
++        settle_year_end(ledgers, current_year, fx_rate,
++                       enable_health_insurance=enable_health_insurance)
++        after = snapshot_tax(ledgers)
++        year_tax = after.diff(before, current_year)
++
++        for ledger in ledgers.values():
++            ledger.annual_contribution_usd = 0.0
++            ledger.annual_contribution_krw = 0.0
++        return dt.year, year_tax
++    return current_year, None
++
++
++def step_dividends(
++    ledgers: Dict[str, AccountLedger],
++    div_schedule,
++    step: int,
++    price_map: Dict[str, float],
++    fx_rate: float,
++) -> None:
++    """2.5. 배당 처리."""
++    if div_schedule is None or not div_schedule.is_dividend_month(step):
++        return
++    for ledger in ledgers.values():
++        for asset in list(ledger.positions.keys()):
++            event = div_schedule.create_event(asset, price_map.get(asset, 0))
++            if event is not None:
++                ledger.apply_dividend(
++                    asset=event.asset,
++                    gross_per_share=event.gross_per_share_usd,
++                    withholding_rate=event.withholding_rate,
++                    fx_rate=fx_rate,
++                    reinvest=event.reinvest,
++                    px_usd=price_map.get(asset, 0),
++                )
++
++
++def step_record(ledgers: Dict[str, AccountLedger]) -> None:
++    """5. 월말 기록."""
++    for ledger in ledgers.values():
++        ledger.record_month()
++
++
++# ══════════════════════════════════════════════
++# 실행 정책 (리밸런싱)
++# ══════════════════════════════════════════════
++
++def drift_exceeds_threshold(
++    ledger: AccountLedger,
++    target_weights: Dict[str, float],
++    price_map: Dict[str, float],
++    threshold_pct: float,
++) -> bool:
++    """현재 비중이 목표에서 threshold 이상 벗어났는지 확인.
++
++    BAND 모드에서 FULL 리밸 트리거 판단용.
++    하나라도 초과 → True (전체 FULL 리밸).
++    """
++    total_value = ledger.total_value_usd()
++    if total_value <= 0:
++        return False
++
++    for asset, target_w in target_weights.items():
++        pos = ledger.positions.get(asset)
++        px = price_map.get(asset, 0.0)
++        actual_value = pos.qty * px if pos and px > 0 else 0.0
++        actual_w = actual_value / total_value
++        if abs(actual_w - target_w) > threshold_pct:
++            return True
++
++    return False
++
++
++def execute_contribution_only(
++    ledger: AccountLedger,
++    target_weights: Dict[str, float],
++    price_map: Dict[str, float],
++    fx_rate: float,
++) -> None:
++    """C/O: 새 돈만 target weights 비례로 매수. 매도 없음."""
++    cash = ledger.cash_usd
++    if cash <= 1.0:
++        return
++
++    tw_sum = sum(target_weights.values())
++    if tw_sum <= 0:
++        return
++
++    min_alloc = max(1.0, cash * DUST_PCT)
++    for asset, tw in target_weights.items():
++        alloc = cash * (tw / tw_sum)
++        if alloc <= min_alloc:
++            continue
++        px = price_map.get(asset, 0.0)
++        if px <= 0:
++            continue
++        buy_qty = alloc / px
++        if buy_qty > QTY_EPSILON:
++            ledger.buy(asset, buy_qty, px, fx_rate)
++
++
++def execute_full_rebalance(
++    ledger: AccountLedger,
++    target_weights: Dict[str, float],
++    price_map: Dict[str, float],
++    fx_rate: float,
++) -> None:
++    """FULL: 목표비중으로 매도 먼저 → 매수."""
++    total_value = ledger.total_value_usd()
++    if total_value <= 0:
++        return
++
++    current_mv: Dict[str, float] = {}
++    for asset, pos in ledger.positions.items():
++        if pos.qty > QTY_EPSILON:
++            px = price_map.get(asset, 0.0)
++            current_mv[asset] = pos.qty * px
++
++    tw_sum = sum(target_weights.values())
++    if tw_sum <= 0:
++        return
++    desired: Dict[str, float] = {a: total_value * (w / tw_sum) for a, w in target_weights.items()}
++
++    all_assets = set(list(current_mv.keys()) + list(desired.keys()))
++    deltas = {a: desired.get(a, 0.0) - current_mv.get(a, 0.0) for a in all_assets}
++
++    # 1. 매도 먼저 (현금 확보)
++    min_trade = max(1.0, total_value * DUST_PCT)
++    for asset, delta in deltas.items():
++        if delta < -min_trade:
++            px = price_map.get(asset, 0.0)
++            if px <= 0:
++                continue
++            pos = ledger.positions.get(asset)
++            if pos is None or pos.qty < QTY_EPSILON:
++                continue
++            sell_qty = min(abs(delta) / px, pos.qty)
++            if sell_qty > QTY_EPSILON:
++                ledger.sell(asset, sell_qty, px, fx_rate)
++
++    # 2. 매수 (available cash 범위 내)
++    for asset, delta in deltas.items():
++        if delta > min_trade:
++            px = price_map.get(asset, 0.0)
++            if px <= 0:
++                continue
++            buy_amount = min(delta, ledger.cash_usd)
++            if buy_amount <= min_trade:
++                continue
++            buy_qty = buy_amount / px
++            if buy_qty > QTY_EPSILON:
++                ledger.buy(asset, buy_qty, px, fx_rate)
++
++
++# ══════════════════════════════════════════════
++# 결과 집계
++# ══════════════════════════════════════════════
++
++def aggregate(ledgers: Dict[str, AccountLedger], reporting_fx: float,
++              annual_tax_history: list = None) -> EngineResult:
++    """전 계좌 통합 결과."""
++    account_summaries = []
++    total_pv = 0.0
++    total_inv = 0.0
++    total_assessed = 0.0
++    total_unpaid = 0.0
++    combined_monthly = None
++
++    for ledger in ledgers.values():
++        s = ledger.summary()
++        account_summaries.append(AccountSummary(
++            account_id=s.account_id,
++            account_type=s.account_type,
++            gross_pv_usd=s.gross_pv_usd,
++            invested_usd=s.invested_usd,
++            tax_assessed_krw=s.tax_assessed_krw,
++            tax_unpaid_krw=s.tax_unpaid_krw,
++            mdd=s.mdd,
++            n_months=s.n_months,
++            transaction_cost_usd=s.transaction_cost_usd,
++            dividend_gross_usd=s.dividend_gross_usd,
++            dividend_withholding_usd=s.dividend_withholding_usd,
++            capital_gains_tax_krw=s.capital_gains_tax_krw,
++            dividend_tax_krw=s.dividend_tax_krw,
++            health_insurance_krw=s.health_insurance_krw,
++        ))
++        total_pv += s.gross_pv_usd
++        total_inv += s.invested_usd
++        total_assessed += s.tax_assessed_krw
++        total_unpaid += s.tax_unpaid_krw
++
++        mv = s.monthly_values
++        if combined_monthly is None:
++            combined_monthly = mv.copy()
++        else:
++            if len(combined_monthly) != len(mv):
++                warnings.warn(
++                    f"계좌 간 monthly_values 길이 불일치: "
++                    f"{len(combined_monthly)} vs {len(mv)}. "
++                    f"짧은 쪽에 맞춰 잘림 — MDD 계산에 영향 가능.",
++                    UserWarning, stacklevel=2,
++                )
++            min_len = min(len(combined_monthly), len(mv))
++            combined_monthly = combined_monthly[:min_len] + mv[:min_len]
++
++    if combined_monthly is not None and len(combined_monthly) > 0:
++        peak = np.maximum.accumulate(np.where(combined_monthly > 0, combined_monthly, 1.0))
++        mdd = float((combined_monthly / peak - 1.0).min())
++    else:
++        mdd = 0.0
++
++    n_months = max(len(l.monthly_values) for l in ledgers.values()) if ledgers else 0
++
++    gross_krw = total_pv * reporting_fx
++    net_krw = gross_krw - total_unpaid
++
++    person = PersonSummary(
++        health_insurance_krw=sum(a.health_insurance_krw for a in account_summaries),
++    )
++
++    return EngineResult(
++        gross_pv_usd=total_pv,
++        invested_usd=total_inv,
++        gross_pv_krw=gross_krw,
++        net_pv_krw=net_krw,
++        reporting_fx_rate=reporting_fx,
++        mdd=mdd,
++        n_months=n_months,
++        n_accounts=len(ledgers),
++        tax=TaxSummary(
++            total_assessed_krw=total_assessed,
++            total_unpaid_krw=total_unpaid,
++            total_paid_krw=total_assessed - total_unpaid,
++        ),
++        accounts=account_summaries,
++        person=person,
++        monthly_values=combined_monthly if combined_monthly is not None else np.array([]),
++        annual_tax_history=annual_tax_history or [],
++    )
+diff --git a/src/aftertaxi/core/ledger.py b/src/aftertaxi/core/ledger.py
+index c602272..184bccf 100644
+--- a/src/aftertaxi/core/ledger.py
++++ b/src/aftertaxi/core/ledger.py
+@@ -17,6 +17,8 @@ from typing import Dict, List, Optional, Tuple
+ 
+ import numpy as np
+ 
++from aftertaxi.core.constants import QTY_EPSILON, AMOUNT_EPSILON_USD, AMOUNT_EPSILON_KRW
++
+ 
+ # ══════════════════════════════════════════════
+ # Position
+@@ -32,11 +34,109 @@ class Position:
+ 
+     @property
+     def avg_cost_usd(self) -> float:
+-        return self.cost_basis_usd / self.qty if self.qty > 1e-12 else 0.0
++        return self.cost_basis_usd / self.qty if self.qty > QTY_EPSILON else 0.0
+ 
+     @property
+     def avg_cost_krw(self) -> float:
+-        return self.cost_basis_krw / self.qty if self.qty > 1e-12 else 0.0
++        return self.cost_basis_krw / self.qty if self.qty > QTY_EPSILON else 0.0
++
++
++# ══════════════════════════════════════════════
++# Tax Snapshot (캡슐화된 세금 상태 조회)
++# ══════════════════════════════════════════════
++
++@dataclass(frozen=True)
++class TaxSnapshot:
++    """세금 항목별 누적 부과액 스냅샷.
++
++    runner/signal_runner가 정산 전후 차이를 계산할 때 사용.
++    Ledger의 private 필드를 직접 접근하지 않고 이 객체를 통해 조회.
++    """
++    cgt_krw: float = 0.0
++    dividend_tax_krw: float = 0.0
++    health_insurance_krw: float = 0.0
++
++    def diff(self, before: "TaxSnapshot", year: int) -> "AnnualTaxRecord":
++        """before 스냅샷과의 차이를 연간 세금 레코드로 반환."""
++        cgt = self.cgt_krw - before.cgt_krw
++        div = self.dividend_tax_krw - before.dividend_tax_krw
++        hi = self.health_insurance_krw - before.health_insurance_krw
++        return AnnualTaxRecord(
++            year=year,
++            cgt_krw=cgt,
++            dividend_tax_krw=div,
++            health_insurance_krw=hi,
++            total_krw=cgt + div + hi,
++        )
++
++
++@dataclass
++class AnnualTaxRecord:
++    """연간 세금 분해 레코드.
++
++    annual_tax_history의 원소 타입.
++    dict-style 접근 지원 (pd.DataFrame 하위호환).
++    """
++    year: int = 0
++    cgt_krw: float = 0.0
++    dividend_tax_krw: float = 0.0
++    health_insurance_krw: float = 0.0
++    total_krw: float = 0.0
++
++    _FIELDS = ("year", "cgt_krw", "dividend_tax_krw", "health_insurance_krw", "total_krw")
++
++    def __getitem__(self, key: str):
++        """dict-style 접근. pd.DataFrame / 기존 코드 하위호환."""
++        try:
++            return getattr(self, key)
++        except AttributeError:
++            raise KeyError(key)
++
++    def get(self, key: str, default=None):
++        """dict.get() 하위호환."""
++        try:
++            return getattr(self, key)
++        except AttributeError:
++            return default
++
++    def keys(self):
++        """pd.DataFrame 생성 지원."""
++        return self._FIELDS
++
++    def values(self):
++        """pd.DataFrame 생성 지원."""
++        return tuple(getattr(self, k) for k in self._FIELDS)
++
++
++@dataclass
++class LedgerSummary:
++    """계좌 요약 결과. typed 접근 + dict-style 하위호환.
++
++    runner._aggregate()와 테스트에서 사용.
++    dict-style 접근(`s["key"]`)은 하위호환용이며, 새 코드는 속성 접근 사용.
++    """
++    account_id: str
++    account_type: str
++    gross_pv_usd: float
++    invested_usd: float
++    tax_assessed_krw: float
++    tax_unpaid_krw: float
++    capital_gains_tax_krw: float
++    dividend_tax_krw: float
++    health_insurance_krw: float
++    transaction_cost_usd: float
++    dividend_gross_usd: float
++    dividend_withholding_usd: float
++    mdd: float
++    n_months: int
++    monthly_values: object  # np.ndarray
++
++    def __getitem__(self, key: str):
++        """dict-style 접근 하위호환. 새 코드는 속성 접근 사용."""
++        try:
++            return getattr(self, key)
++        except AttributeError:
++            raise KeyError(key)
+ 
+ 
+ # ══════════════════════════════════════════════
+@@ -121,12 +221,26 @@ class AccountLedger:
+     def total_value_usd(self) -> float:
+         return self.cash_usd + self.portfolio_value_usd()
+ 
++    # ── 세금 스냅샷 (캡슐화) ──
++
++    def tax_snapshot(self) -> TaxSnapshot:
++        """현재 세금 항목별 누적 부과액 스냅샷.
++
++        runner가 정산 전후 차이를 구할 때 사용.
++        private 필드 직접 접근 대신 이 메서드를 쓸 것.
++        """
++        return TaxSnapshot(
++            cgt_krw=self._capital_gains_tax_assessed_krw,
++            dividend_tax_krw=self._dividend_tax_assessed_krw,
++            health_insurance_krw=self._health_insurance_assessed_krw,
++        )
++
+     # ── 시가 반영 ──
+ 
+     def mark_to_market(self, price_map: Dict[str, float]) -> None:
+         """가격 갱신."""
+         for asset, pos in self.positions.items():
+-            if asset in price_map and pos.qty > 1e-12:
++            if asset in price_map and pos.qty > QTY_EPSILON:
+                 pos.market_value_usd = pos.qty * price_map[asset]
+ 
+     # ── 배당 처리 ──
+@@ -141,7 +255,7 @@ class AccountLedger:
+         3. net을 현금에 추가 (또는 재투자)
+         """
+         pos = self.positions.get(asset)
+-        if pos is None or pos.qty < 1e-12:
++        if pos is None or pos.qty < QTY_EPSILON:
+             return 0.0
+ 
+         gross_usd = pos.qty * gross_per_share
+@@ -205,7 +319,7 @@ class AccountLedger:
+         fee_usd = cost_usd * (self.transaction_cost_bps / 10_000)
+         total_cost_usd = cost_usd + fee_usd
+ 
+-        if total_cost_usd > self.cash_usd + 1e-8:
++        if total_cost_usd > self.cash_usd + AMOUNT_EPSILON_USD:
+             # 현금 부족 — 가능한 만큼만 (fee 포함)
+             available = self.cash_usd
+             cost_usd = available / (1 + self.transaction_cost_bps / 10_000)
+@@ -240,7 +354,7 @@ class AccountLedger:
+         Returns: realized_pnl_krw
+         """
+         pos = self.positions.get(asset)
+-        if pos is None or pos.qty < 1e-12:
++        if pos is None or pos.qty < QTY_EPSILON:
+             return 0.0
+ 
+         qty = min(qty, pos.qty)
+@@ -285,7 +399,7 @@ class AccountLedger:
+         """전 포지션 매도."""
+         for asset in list(self.positions.keys()):
+             pos = self.positions[asset]
+-            if pos.qty > 1e-12 and asset in price_map:
++            if pos.qty > QTY_EPSILON and asset in price_map:
+                 self.sell(asset, pos.qty, price_map[asset], fx_rate)
+ 
+     # ── 세금 정산 ──
+@@ -364,7 +478,7 @@ class AccountLedger:
+ 
+     def settle_dividend_tax(self, fx_rate: float) -> float:
+         """연간 배당소득세 정산. get → compute → apply 패턴."""
+-        if self.annual_dividend_gross_usd < 1e-8:
++        if self.annual_dividend_gross_usd < AMOUNT_EPSILON_USD:
+             return 0.0
+         from aftertaxi.core.tax_engine import compute_dividend_tax
+         inputs = self.get_dividend_tax_inputs(fx_rate)
+@@ -405,7 +519,7 @@ class AccountLedger:
+         건보료는 세금과 별도 버킷이지만, 납부는 unpaid_tax_liability에 합산.
+         (실제로는 별도 납부이지만, 엔진에서는 cash drag로 통합 처리)
+         """
+-        if premium_krw < 1e-8:
++        if premium_krw < AMOUNT_EPSILON_USD:
+             return 0.0
+ 
+         self._health_insurance_assessed_krw += premium_krw
+@@ -421,7 +535,7 @@ class AccountLedger:
+ 
+     def pay_tax(self, fx_rate: float) -> float:
+         """미납 세금을 USD cash에서 차감. Returns: tax_usd."""
+-        if self.unpaid_tax_liability_krw < 1e-8 or fx_rate <= 0:
++        if self.unpaid_tax_liability_krw < AMOUNT_EPSILON_USD or fx_rate <= 0:
+             return 0.0
+         tax_usd = self.unpaid_tax_liability_krw / fx_rate
+         self.cash_usd -= tax_usd
+@@ -441,7 +555,8 @@ class AccountLedger:
+ 
+     # ── 요약 ──
+ 
+-    def summary(self) -> dict:
++    def summary(self) -> LedgerSummary:
++        """계좌 요약. typed 객체 반환 (dict-style 접근도 하위호환 지원)."""
+         mv = np.array(self.monthly_values, dtype=float)
+         if len(mv) > 0:
+             peak = np.maximum.accumulate(np.where(mv > 0, mv, 1.0))
+@@ -449,20 +564,20 @@ class AccountLedger:
+         else:
+             mdd = 0.0
+ 
+-        return {
+-            "account_id": self.account_id,
+-            "account_type": self.account_type,
+-            "gross_pv_usd": self.total_value_usd(),
+-            "invested_usd": self.total_invested_usd,
+-            "tax_assessed_krw": self._total_tax_assessed_krw,
+-            "tax_unpaid_krw": self.unpaid_tax_liability_krw,
+-            "capital_gains_tax_krw": self._capital_gains_tax_assessed_krw,
+-            "dividend_tax_krw": self._dividend_tax_assessed_krw,
+-            "health_insurance_krw": self._health_insurance_assessed_krw,
+-            "transaction_cost_usd": self.total_transaction_cost_usd,
+-            "dividend_gross_usd": self.cumulative_dividend_gross_usd,
+-            "dividend_withholding_usd": self.cumulative_dividend_withholding_usd,
+-            "mdd": mdd,
+-            "n_months": len(self.monthly_values),
+-            "monthly_values": mv,
+-        }
++        return LedgerSummary(
++            account_id=self.account_id,
++            account_type=self.account_type,
++            gross_pv_usd=self.total_value_usd(),
++            invested_usd=self.total_invested_usd,
++            tax_assessed_krw=self._total_tax_assessed_krw,
++            tax_unpaid_krw=self.unpaid_tax_liability_krw,
++            capital_gains_tax_krw=self._capital_gains_tax_assessed_krw,
++            dividend_tax_krw=self._dividend_tax_assessed_krw,
++            health_insurance_krw=self._health_insurance_assessed_krw,
++            transaction_cost_usd=self.total_transaction_cost_usd,
++            dividend_gross_usd=self.cumulative_dividend_gross_usd,
++            dividend_withholding_usd=self.cumulative_dividend_withholding_usd,
++            mdd=mdd,
++            n_months=len(self.monthly_values),
++            monthly_values=mv,
++        )
+diff --git a/src/aftertaxi/core/runner.py b/src/aftertaxi/core/runner.py
+index eb6b0fb..f614958 100644
+--- a/src/aftertaxi/core/runner.py
++++ b/src/aftertaxi/core/runner.py
+@@ -16,23 +16,41 @@ PR 2: C/O 단일 경로. 월 루프 + 세금 정산 + 최종 청산.
+   2. settle (마지막 연도)
+   3. ISA settle (해당 시)
+   4. pay_tax
++
++빌딩 블록은 core/engine_steps.py에 정의.
++이 모듈은 고정 비중 실행기(run_engine)만 제공.
+ """
+ from __future__ import annotations
+ 
+-import bisect
+-from typing import Dict, List, Optional
++from typing import Dict
+ 
+-import numpy as np
+ import pandas as pd
+ 
+ from aftertaxi.core.contracts import (
+-    AccountConfig, AccountSummary, AccountType, BacktestConfig,
+-    EngineResult, PersonSummary, RebalanceMode, TaxSummary,
++    BacktestConfig, EngineResult, RebalanceMode,
+ )
+ from aftertaxi.core.ledger import AccountLedger
+-from aftertaxi.core.settlement import settle_year_end, settle_final
++from aftertaxi.core.settlement import settle_final
+ from aftertaxi.core.allocation import AllocationPlanner
+ 
++# ── 빌딩 블록 import (engine_steps가 single source of truth) ──
++from aftertaxi.core.engine_steps import (
++    DUST_PCT,
++    create_ledgers,
++    build_fx_lookup,
++    get_fx_rate,
++    snapshot_tax,
++    record_tax_delta,
++    step_mark_to_market,
++    step_year_boundary,
++    step_dividends,
++    step_record,
++    execute_contribution_only,
++    execute_full_rebalance,
++    drift_exceeds_threshold,
++    aggregate,
++)
++
+ 
+ def run_engine(
+     config: BacktestConfig,
+@@ -43,38 +61,24 @@ def run_engine(
+     """FX-only 백테스트 실행.
+ 
+     월 루프는 5개 step 함수로 분해:
+-      _step_mark_to_market → _step_year_boundary → _step_dividends
+-      → _step_deposit_and_rebalance → _step_record
++      step_mark_to_market → step_year_boundary → step_dividends
++      → _step_deposit_and_rebalance → step_record
+     순서 변경 금지. 의미론 변경 금지. 구조 추출만.
+     """
+     index = prices.index
+     n = config.n_months if config.n_months else len(index) - config.start_index
+     start = config.start_index
+-    fx_lookup = _build_fx_lookup(fx_rates)
++    fx_lookup = build_fx_lookup(fx_rates)
+ 
+     # ── 계좌 생성 ──
+-    ledgers: Dict[str, AccountLedger] = {}
+-    for ac in config.accounts:
+-        is_taxable = ac.account_type == AccountType.TAXABLE
+-        ledgers[ac.account_id] = AccountLedger(
+-            account_id=ac.account_id,
+-            account_type=ac.account_type.value,
+-            tax_rate=ac.tax_config.capital_gains_rate if is_taxable else 0.0,
+-            annual_exemption=ac.tax_config.annual_exemption if is_taxable else 0.0,
+-            isa_exempt_limit=ac.tax_config.isa_exempt_limit if ac.account_type == AccountType.ISA else 0.0,
+-            isa_excess_rate=ac.tax_config.capital_gains_rate if ac.account_type == AccountType.ISA else 0.0,
+-            transaction_cost_bps=ac.transaction_cost_bps,
+-            journal=journal,
+-            progressive_brackets=ac.tax_config.progressive_brackets if is_taxable else None,
+-            progressive_threshold=ac.tax_config.progressive_threshold if is_taxable else 20_000_000.0,
+-        )
++    ledgers = create_ledgers(config, journal=journal)
+ 
+     planner = AllocationPlanner(config.accounts)
+     total_contribution = sum(ac.monthly_contribution for ac in config.accounts)
+ 
+     # ── 월 루프 ──
+     current_year = index[start].year if start < len(index) else None
+-    annual_tax_history = []  # 연도별 세금 분해
++    annual_tax_history = []
+ 
+     for step in range(n):
+         i = start + step
+@@ -83,16 +87,16 @@ def run_engine(
+ 
+         dt = index[i]
+         price_map = {k: v for k, v in prices.iloc[i].to_dict().items() if v == v}
+-        fx_rate = _get_fx_rate(dt, fx_lookup)
++        fx_rate = get_fx_rate(dt, fx_lookup)
+ 
+-        _step_mark_to_market(ledgers, price_map)
++        step_mark_to_market(ledgers, price_map)
+ 
+-        current_year, year_tax = _step_year_boundary(
++        current_year, year_tax = step_year_boundary(
+             ledgers, current_year, dt, fx_rate, config.enable_health_insurance)
+         if year_tax is not None:
+             annual_tax_history.append(year_tax)
+ 
+-        _step_dividends(ledgers, config.dividend_schedule, step, price_map, fx_rate)
++        step_dividends(ledgers, config.dividend_schedule, step, price_map, fx_rate)
+ 
+         _step_deposit_and_rebalance(
+             ledgers, planner, config.accounts,
+@@ -101,119 +105,27 @@ def run_engine(
+             step=step, rebal_every=config.strategy.rebalance_every,
+             price_map=price_map, fx_rate=fx_rate)
+ 
+-        _step_record(ledgers)
++        step_record(ledgers)
+ 
+     # ── 최종 청산 ──
+     final_i = min(start + n - 1, len(index) - 1)
+     final_dt = index[final_i]
+     final_prices = {k: v for k, v in prices.iloc[final_i].to_dict().items() if v == v}
+-    final_fx = _get_fx_rate(final_dt, fx_lookup)
+-
+-    # 최종 청산 전 스냅샷
+-    pre_cgt = sum(l._capital_gains_tax_assessed_krw for l in ledgers.values())
+-    pre_div = sum(l._dividend_tax_assessed_krw for l in ledgers.values())
+-    pre_hi = sum(l._health_insurance_assessed_krw for l in ledgers.values())
++    final_fx = get_fx_rate(final_dt, fx_lookup)
+ 
++    before = snapshot_tax(ledgers)
+     settle_final(ledgers, final_dt.year, final_prices, final_fx,
+                  enable_health_insurance=config.enable_health_insurance)
++    after = snapshot_tax(ledgers)
++    record_tax_delta(annual_tax_history, before, after, final_dt.year)
+ 
+-    # 최종 청산분 기록
+-    post_cgt = sum(l._capital_gains_tax_assessed_krw for l in ledgers.values())
+-    post_div = sum(l._dividend_tax_assessed_krw for l in ledgers.values())
+-    post_hi = sum(l._health_insurance_assessed_krw for l in ledgers.values())
+-    final_tax = {
+-        "year": final_dt.year,
+-        "cgt_krw": post_cgt - pre_cgt,
+-        "dividend_tax_krw": post_div - pre_div,
+-        "health_insurance_krw": post_hi - pre_hi,
+-        "total_krw": (post_cgt - pre_cgt) + (post_div - pre_div) + (post_hi - pre_hi),
+-    }
+-    if final_tax["total_krw"] > 0:
+-        # 같은 연도 entry가 이미 있으면 합산
+-        existing = [h for h in annual_tax_history if h["year"] == final_dt.year]
+-        if existing:
+-            for k in ["cgt_krw", "dividend_tax_krw", "health_insurance_krw", "total_krw"]:
+-                existing[0][k] += final_tax[k]
+-        else:
+-            annual_tax_history.append(final_tax)
+-
+-    return _aggregate(ledgers, final_fx, annual_tax_history)
++    return aggregate(ledgers, final_fx, annual_tax_history)
+ 
+ 
+ # ══════════════════════════════════════════════
+-# Step 함수 (순서 변경 금지)
++# Runner-specific step (고정 비중 전용)
+ # ══════════════════════════════════════════════
+ 
+-def _step_mark_to_market(
+-    ledgers: Dict[str, AccountLedger],
+-    price_map: Dict[str, float],
+-) -> None:
+-    """1. 시가 반영."""
+-    for ledger in ledgers.values():
+-        ledger.mark_to_market(price_map)
+-
+-
+-def _step_year_boundary(
+-    ledgers: Dict[str, AccountLedger],
+-    current_year: int,
+-    dt: pd.Timestamp,
+-    fx_rate: float,
+-    enable_health_insurance: bool,
+-) -> tuple:
+-    """2. 연도 전환 → 세금 정산. Returns: (갱신된 year, tax_snapshot or None)."""
+-    if current_year is not None and dt.year != current_year:
+-        # 정산 전 스냅샷
+-        pre_cgt = sum(l._capital_gains_tax_assessed_krw for l in ledgers.values())
+-        pre_div = sum(l._dividend_tax_assessed_krw for l in ledgers.values())
+-        pre_hi = sum(l._health_insurance_assessed_krw for l in ledgers.values())
+-
+-        settle_year_end(ledgers, current_year, fx_rate,
+-                       enable_health_insurance=enable_health_insurance)
+-
+-        # 정산 후 차이 = 이번 연도 세금
+-        post_cgt = sum(l._capital_gains_tax_assessed_krw for l in ledgers.values())
+-        post_div = sum(l._dividend_tax_assessed_krw for l in ledgers.values())
+-        post_hi = sum(l._health_insurance_assessed_krw for l in ledgers.values())
+-
+-        year_tax = {
+-            "year": current_year,
+-            "cgt_krw": post_cgt - pre_cgt,
+-            "dividend_tax_krw": post_div - pre_div,
+-            "health_insurance_krw": post_hi - pre_hi,
+-            "total_krw": (post_cgt - pre_cgt) + (post_div - pre_div) + (post_hi - pre_hi),
+-        }
+-
+-        for ledger in ledgers.values():
+-            ledger.annual_contribution_usd = 0.0
+-            ledger.annual_contribution_krw = 0.0
+-        return dt.year, year_tax
+-    return current_year, None
+-
+-
+-def _step_dividends(
+-    ledgers: Dict[str, AccountLedger],
+-    div_schedule,
+-    step: int,
+-    price_map: Dict[str, float],
+-    fx_rate: float,
+-) -> None:
+-    """2.5. 배당 처리."""
+-    if div_schedule is None or not div_schedule.is_dividend_month(step):
+-        return
+-    for ledger in ledgers.values():
+-        for asset in list(ledger.positions.keys()):
+-            event = div_schedule.create_event(asset, price_map.get(asset, 0))
+-            if event is not None:
+-                ledger.apply_dividend(
+-                    asset=event.asset,
+-                    gross_per_share=event.gross_per_share_usd,
+-                    withholding_rate=event.withholding_rate,
+-                    fx_rate=fx_rate,
+-                    reinvest=event.reinvest,
+-                    px_usd=price_map.get(asset, 0),
+-                )
+-
+-
+ def _step_deposit_and_rebalance(
+     ledgers: Dict[str, AccountLedger],
+     planner: AllocationPlanner,
+@@ -244,231 +156,12 @@ def _step_deposit_and_rebalance(
+             ledger.deposit(order.deposit, fx_rate)
+ 
+         if order.rebalance_mode == RebalanceMode.FULL and order.should_rebalance:
+-            _execute_full_rebalance(ledger, order.target_weights, price_map, fx_rate)
++            execute_full_rebalance(ledger, order.target_weights, price_map, fx_rate)
+         elif order.rebalance_mode == RebalanceMode.BAND and order.should_rebalance:
+-            if _drift_exceeds_threshold(ledger, order.target_weights, price_map,
+-                                         order.band_threshold_pct):
+-                _execute_full_rebalance(ledger, order.target_weights, price_map, fx_rate)
++            if drift_exceeds_threshold(ledger, order.target_weights, price_map,
++                                       order.band_threshold_pct):
++                execute_full_rebalance(ledger, order.target_weights, price_map, fx_rate)
+             else:
+-                _execute_contribution_only(ledger, order.target_weights, price_map, fx_rate)
++                execute_contribution_only(ledger, order.target_weights, price_map, fx_rate)
+         else:
+-            _execute_contribution_only(ledger, order.target_weights, price_map, fx_rate)
+-
+-
+-def _step_record(ledgers: Dict[str, AccountLedger]) -> None:
+-    """5. 월말 기록."""
+-    for ledger in ledgers.values():
+-        ledger.record_month()
+-
+-
+-def _build_fx_lookup(fx_rates: pd.Series) -> tuple:
+-    """환율 Series → (dict, sorted_dates) 사전 구축. O(n) 1회."""
+-    fx_dict = {ts: float(v) for ts, v in fx_rates.items()}
+-    sorted_dates = sorted(fx_dict.keys())
+-    return fx_dict, sorted_dates
+-
+-
+-def _get_fx_rate(dt: pd.Timestamp, fx_lookup: tuple) -> float:
+-    """O(1) dict lookup + O(log n) bisect fallback."""
+-    fx_dict, sorted_dates = fx_lookup
+-    if dt in fx_dict:
+-        return fx_dict[dt]
+-    # bisect: 가장 가까운 이전 날짜
+-    idx = bisect.bisect_right(sorted_dates, dt) - 1
+-    if idx >= 0:
+-        return fx_dict[sorted_dates[idx]]
+-    return fx_dict[sorted_dates[0]]
+-
+-
+-def _aggregate(ledgers: Dict[str, AccountLedger], reporting_fx: float,
+-               annual_tax_history: list = None) -> EngineResult:
+-    """전 계좌 통합 결과."""
+-    account_summaries = []
+-    total_pv = 0.0
+-    total_inv = 0.0
+-    total_assessed = 0.0
+-    total_unpaid = 0.0
+-    combined_monthly = None
+-
+-    for ledger in ledgers.values():
+-        s = ledger.summary()
+-        account_summaries.append(AccountSummary(
+-            account_id=s["account_id"],
+-            account_type=s["account_type"],
+-            gross_pv_usd=s["gross_pv_usd"],
+-            invested_usd=s["invested_usd"],
+-            tax_assessed_krw=s["tax_assessed_krw"],
+-            tax_unpaid_krw=s["tax_unpaid_krw"],
+-            mdd=s["mdd"],
+-            n_months=s["n_months"],
+-            transaction_cost_usd=s["transaction_cost_usd"],
+-            dividend_gross_usd=s["dividend_gross_usd"],
+-            dividend_withholding_usd=s["dividend_withholding_usd"],
+-            capital_gains_tax_krw=s["capital_gains_tax_krw"],
+-            dividend_tax_krw=s["dividend_tax_krw"],
+-            health_insurance_krw=s["health_insurance_krw"],
+-        ))
+-        total_pv += s["gross_pv_usd"]
+-        total_inv += s["invested_usd"]
+-        total_assessed += s["tax_assessed_krw"]
+-        total_unpaid += s["tax_unpaid_krw"]
+-
+-        mv = s["monthly_values"]
+-        if combined_monthly is None:
+-            combined_monthly = mv.copy()
+-        else:
+-            min_len = min(len(combined_monthly), len(mv))
+-            combined_monthly = combined_monthly[:min_len] + mv[:min_len]
+-
+-    if combined_monthly is not None and len(combined_monthly) > 0:
+-        peak = np.maximum.accumulate(np.where(combined_monthly > 0, combined_monthly, 1.0))
+-        mdd = float((combined_monthly / peak - 1.0).min())
+-    else:
+-        mdd = 0.0
+-
+-    n_months = max(len(l.monthly_values) for l in ledgers.values()) if ledgers else 0
+-
+-    gross_krw = total_pv * reporting_fx
+-    net_krw = gross_krw - total_unpaid
+-
+-    # person-scope: 계좌 합산 (authority)
+-    person = PersonSummary(
+-        health_insurance_krw=sum(a.health_insurance_krw for a in account_summaries),
+-    )
+-
+-    return EngineResult(
+-        gross_pv_usd=total_pv,
+-        invested_usd=total_inv,
+-        gross_pv_krw=gross_krw,
+-        net_pv_krw=net_krw,
+-        reporting_fx_rate=reporting_fx,
+-        mdd=mdd,
+-        n_months=n_months,
+-        n_accounts=len(ledgers),
+-        tax=TaxSummary(
+-            total_assessed_krw=total_assessed,
+-            total_unpaid_krw=total_unpaid,
+-            total_paid_krw=total_assessed - total_unpaid,
+-        ),
+-        accounts=account_summaries,
+-        person=person,
+-        monthly_values=combined_monthly if combined_monthly is not None else np.array([]),
+-        annual_tax_history=annual_tax_history or [],
+-    )
+-
+-
+-# ══════════════════════════════════════════════
+-# 실행 정책
+-# ══════════════════════════════════════════════
+-
+-DUST_PCT = 0.001  # 포트폴리오 대비 0.1% 미만 거래 무시
+-
+-
+-def _drift_exceeds_threshold(
+-    ledger: AccountLedger,
+-    target_weights: Dict[str, float],
+-    price_map: Dict[str, float],
+-    threshold_pct: float,
+-) -> bool:
+-    """현재 비중이 목표에서 threshold 이상 벗어났는지 확인.
+-
+-    BAND 모드에서 FULL 리밸 트리거 판단용.
+-    하나라도 초과 → True (전체 FULL 리밸).
+-    """
+-    total_value = ledger.total_value_usd()
+-    if total_value <= 0:
+-        return False  # 아직 포지션 없음 → C/O
+-
+-    for asset, target_w in target_weights.items():
+-        pos = ledger.positions.get(asset)
+-        px = price_map.get(asset, 0.0)
+-        actual_value = pos.qty * px if pos and px > 0 else 0.0
+-        actual_w = actual_value / total_value
+-        if abs(actual_w - target_w) > threshold_pct:
+-            return True
+-
+-    return False
+-
+-
+-def _execute_contribution_only(
+-    ledger: AccountLedger,
+-    target_weights: Dict[str, float],
+-    price_map: Dict[str, float],
+-    fx_rate: float,
+-) -> None:
+-    """C/O: 새 돈만 target weights 비례로 매수. 매도 없음."""
+-    cash = ledger.cash_usd
+-    if cash <= 1.0:
+-        return
+-
+-    tw_sum = sum(target_weights.values())
+-    if tw_sum <= 0:
+-        return
+-
+-    min_alloc = max(1.0, cash * DUST_PCT)
+-    for asset, tw in target_weights.items():
+-        alloc = cash * (tw / tw_sum)
+-        if alloc <= min_alloc:
+-            continue
+-        px = price_map.get(asset, 0.0)
+-        if px <= 0:
+-            continue
+-        buy_qty = alloc / px
+-        if buy_qty > 1e-12:
+-            ledger.buy(asset, buy_qty, px, fx_rate)
+-
+-
+-def _execute_full_rebalance(
+-    ledger: AccountLedger,
+-    target_weights: Dict[str, float],
+-    price_map: Dict[str, float],
+-    fx_rate: float,
+-) -> None:
+-    """FULL: 목표비중으로 매도 먼저 → 매수."""
+-    total_value = ledger.total_value_usd()
+-    if total_value <= 0:
+-        return
+-
+-    # 현재 시가
+-    current_mv: Dict[str, float] = {}
+-    for asset, pos in ledger.positions.items():
+-        if pos.qty > 1e-12:
+-            px = price_map.get(asset, 0.0)
+-            current_mv[asset] = pos.qty * px
+-
+-    # 목표 시가 (weights 정규화 — C/O와 동일하게 100% 투자)
+-    tw_sum = sum(target_weights.values())
+-    if tw_sum <= 0:
+-        return
+-    desired: Dict[str, float] = {a: total_value * (w / tw_sum) for a, w in target_weights.items()}
+-
+-    # delta 계산
+-    all_assets = set(list(current_mv.keys()) + list(desired.keys()))
+-    deltas = {a: desired.get(a, 0.0) - current_mv.get(a, 0.0) for a in all_assets}
+-
+-    # 1. 매도 먼저 (현금 확보)
+-    min_trade = max(1.0, total_value * DUST_PCT)
+-    for asset, delta in deltas.items():
+-        if delta < -min_trade:
+-            px = price_map.get(asset, 0.0)
+-            if px <= 0:
+-                continue
+-            pos = ledger.positions.get(asset)
+-            if pos is None or pos.qty < 1e-12:
+-                continue
+-            sell_qty = min(abs(delta) / px, pos.qty)
+-            if sell_qty > 1e-12:
+-                ledger.sell(asset, sell_qty, px, fx_rate)
+-
+-    # 2. 매수 (available cash 범위 내)
+-    for asset, delta in deltas.items():
+-        if delta > min_trade:
+-            px = price_map.get(asset, 0.0)
+-            if px <= 0:
+-                continue
+-            buy_amount = min(delta, ledger.cash_usd)
+-            if buy_amount <= min_trade:
+-                continue
+-            buy_qty = buy_amount / px
+-            if buy_qty > 1e-12:
+-                ledger.buy(asset, buy_qty, px, fx_rate)
++            execute_contribution_only(ledger, order.target_weights, price_map, fx_rate)
+diff --git a/src/aftertaxi/core/settlement.py b/src/aftertaxi/core/settlement.py
+index 442b649..9ff7bfd 100644
+--- a/src/aftertaxi/core/settlement.py
++++ b/src/aftertaxi/core/settlement.py
+@@ -21,6 +21,7 @@ from typing import Dict
+ 
+ from aftertaxi.core.contracts import AccountType
+ from aftertaxi.core.ledger import AccountLedger
++from aftertaxi.core.constants import AMOUNT_EPSILON_USD
+ 
+ # account_type 상수: ledger는 str로 저장하므로 enum.value로 비교
+ _TAXABLE = AccountType.TAXABLE.value
+@@ -30,32 +31,27 @@ _TAXABLE = AccountType.TAXABLE.value
+ # Account-level Settlement
+ # ══════════════════════════════════════════════
+ 
+-def settle_year_end(
++def _settle_post_cgt(
+     ledgers: Dict[str, AccountLedger],
+-    year: int,
+     fx_rate: float,
+-    enable_health_insurance: bool = False,
++    enable_health_insurance: bool,
++    settle_isa: bool = False,
+ ) -> None:
+-    """연도 전환 시 정산. settlement가 계산을 중재.
++    """CGT 정산 이후 공통 정산 순서.
++
++    settle_year_end과 settle_final이 공유하는 핵심 로직.
+ 
+     순서:
+-      1. [Account] 양도소득세: get → compute → apply
+-      2. [Person]  건보료용 연간 배당소득 스냅샷
+-      3. [Account] 배당소득세: get → compute → apply
+-      4. [Person]  건강보험료
+-      5. [Account] 세금 납부
++      1. [Person]  건보료용 연간 배당소득 스냅샷
++      2. [Account] 배당소득세 (+ ISA if settle_isa)
++      3. [Person]  건강보험료
++      4. [Account] 세금 납부
+     """
+     from aftertaxi.core.tax_engine import (
+-        compute_capital_gains_tax, compute_dividend_tax, compute_health_insurance,
++        compute_dividend_tax, compute_health_insurance,
+     )
+ 
+-    # 1. 양도소득세 — settlement가 중재
+-    for ledger in ledgers.values():
+-        inputs = ledger.get_cgt_inputs(year)
+-        result = compute_capital_gains_tax(**inputs)
+-        ledger.apply_cgt_result(result)
+-
+-    # 2. 건보료용 배당소득 스냅샷
++    # 1. 건보료용 배당소득 스냅샷
+     annual_div_krw = 0.0
+     if enable_health_insurance:
+         annual_div_krw = sum(
+@@ -64,19 +60,23 @@ def settle_year_end(
+             if l.account_type == _TAXABLE
+         )
+ 
+-    # 3. 배당소득세 — settlement가 중재
++    # 2. 배당소득세 (+ ISA)
+     for ledger in ledgers.values():
+         if ledger.account_type == _TAXABLE:
+-            if ledger.annual_dividend_gross_usd >= 1e-8:
++            if ledger.annual_dividend_gross_usd >= AMOUNT_EPSILON_USD:
+                 inputs = ledger.get_dividend_tax_inputs(fx_rate)
+                 result = compute_dividend_tax(**inputs)
+                 ledger.apply_dividend_tax_result(result)
+             else:
+-                # 배당 없어도 카운터 리셋
+                 ledger.annual_dividend_gross_usd = 0.0
+                 ledger.annual_dividend_withholding_usd = 0.0
++        if settle_isa and ledger.isa_exempt_limit > 0:
++            from aftertaxi.core.tax_engine import compute_isa_settlement
++            isa_inputs = ledger.get_isa_inputs()
++            isa_result = compute_isa_settlement(**isa_inputs)
++            ledger.apply_isa_result(isa_result)
+ 
+-    # 4. 건보료
++    # 3. 건보료
+     if enable_health_insurance:
+         hi_result = compute_health_insurance(dividend_income_krw=annual_div_krw)
+         if hi_result.premium_krw > 0:
+@@ -85,73 +85,56 @@ def settle_year_end(
+                     ledger.apply_health_insurance(hi_result.premium_krw, fx_rate)
+                     break
+ 
+-    # 5. 세금 납부
++    # 4. 세금 납부
+     for ledger in ledgers.values():
+         ledger.pay_tax(fx_rate)
+ 
+ 
+-def settle_final(
++def settle_year_end(
+     ledgers: Dict[str, AccountLedger],
+     year: int,
+-    price_map: Dict[str, float],
+     fx_rate: float,
+     enable_health_insurance: bool = False,
+ ) -> None:
+-    """최종 청산 시 정산. settlement가 계산을 중재.
++    """연도 전환 시 정산.
+ 
+-    순서:
+-      1. [Account] 전량 청산 → 양도세 (get → compute → apply)
+-      2. [Person]  건보료용 배당소득 스냅샷
+-      3. [Account] 배당세 + ISA (get → compute → apply)
+-      4. [Person]  건보료
+-      5. [Account] 납부 + 기록
++    순서: 양도소득세 → 배당세/건보료/납부 (공통)
+     """
+-    from aftertaxi.core.tax_engine import (
+-        compute_capital_gains_tax, compute_dividend_tax,
+-        compute_isa_settlement, compute_health_insurance,
+-    )
++    from aftertaxi.core.tax_engine import compute_capital_gains_tax
+ 
+-    # Pass 1: 청산 + 양도세
++    # 1. 양도소득세
+     for ledger in ledgers.values():
+-        ledger.liquidate(price_map, fx_rate)
+         inputs = ledger.get_cgt_inputs(year)
+         result = compute_capital_gains_tax(**inputs)
+         ledger.apply_cgt_result(result)
+ 
+-    # 건보료용 배당소득 스냅샷
+-    annual_div_krw = 0.0
+-    if enable_health_insurance:
+-        annual_div_krw = sum(
+-            l.annual_dividend_gross_usd * fx_rate
+-            for l in ledgers.values()
+-            if l.account_type == _TAXABLE
+-        )
++    # 2~5. 배당세/건보료/납부 (공통)
++    _settle_post_cgt(ledgers, fx_rate, enable_health_insurance)
++
+ 
+-    # Pass 2: 배당세 + ISA
++def settle_final(
++    ledgers: Dict[str, AccountLedger],
++    year: int,
++    price_map: Dict[str, float],
++    fx_rate: float,
++    enable_health_insurance: bool = False,
++) -> None:
++    """최종 청산 시 정산.
++
++    순서: 청산+양도세 → 배당세/ISA/건보료/납부 (공통) → 기록
++    """
++    from aftertaxi.core.tax_engine import compute_capital_gains_tax
++
++    # 1. 전량 청산 + 양도소득세
+     for ledger in ledgers.values():
+-        if ledger.account_type == _TAXABLE:
+-            if ledger.annual_dividend_gross_usd >= 1e-8:
+-                inputs = ledger.get_dividend_tax_inputs(fx_rate)
+-                result = compute_dividend_tax(**inputs)
+-                ledger.apply_dividend_tax_result(result)
+-            else:
+-                ledger.annual_dividend_gross_usd = 0.0
+-                ledger.annual_dividend_withholding_usd = 0.0
+-        if ledger.isa_exempt_limit > 0:
+-            isa_inputs = ledger.get_isa_inputs()
+-            isa_result = compute_isa_settlement(**isa_inputs)
+-            ledger.apply_isa_result(isa_result)
++        ledger.liquidate(price_map, fx_rate)
++        inputs = ledger.get_cgt_inputs(year)
++        result = compute_capital_gains_tax(**inputs)
++        ledger.apply_cgt_result(result)
+ 
+-    # Pass 3: 건보료
+-    if enable_health_insurance:
+-        hi_result = compute_health_insurance(dividend_income_krw=annual_div_krw)
+-        if hi_result.premium_krw > 0:
+-            for ledger in ledgers.values():
+-                if ledger.account_type == _TAXABLE:
+-                    ledger.apply_health_insurance(hi_result.premium_krw, fx_rate)
+-                    break
++    # 2~5. 배당세/ISA/건보료/납부 (공통)
++    _settle_post_cgt(ledgers, fx_rate, enable_health_insurance, settle_isa=True)
+ 
+-    # Pass 4: 납부 + 기록
++    # 6. 최종 기록
+     for ledger in ledgers.values():
+-        ledger.pay_tax(fx_rate)
+         ledger.record_month(replace_last=True)
+diff --git a/src/aftertaxi/core/tax_engine.py b/src/aftertaxi/core/tax_engine.py
+index 4ed4c4e..4274747 100644
+--- a/src/aftertaxi/core/tax_engine.py
++++ b/src/aftertaxi/core/tax_engine.py
+@@ -12,6 +12,8 @@ from __future__ import annotations
+ from dataclasses import dataclass
+ from typing import List, Tuple
+ 
++from aftertaxi.core.constants import AMOUNT_EPSILON_KRW
++
+ 
+ # ══════════════════════════════════════════════
+ # 결과 객체 (풍부한 반환값)
+@@ -124,7 +126,7 @@ def compute_capital_gains_tax(
+     for yr, amt in carryforward:
+         if current_year > 0 and yr > 0 and (current_year - yr) >= carry_expiry_years:
+             continue
+-        if amt > 1e-6:
++        if amt > AMOUNT_EPSILON_KRW:
+             valid_carry.append((yr, amt))
+ 
+     # 2. 상쇄 처리
+@@ -143,12 +145,12 @@ def compute_capital_gains_tax(
+             remaining_net -= offset
+             carryforward_used.append((yr, offset))
+             remainder = amt - offset
+-            if remainder > 1e-6:
++            if remainder > AMOUNT_EPSILON_KRW:
+                 carryforward_remaining.append((yr, remainder))
+         net_after_carry = remaining_net
+     else:
+         # 순손실 → 올해 손실 이월 + 기존 carry 유지
+-        if abs(net) > 1e-6:
++        if abs(net) > AMOUNT_EPSILON_KRW:
+             new_loss_carry.append((current_year, abs(net)))
+         carryforward_remaining = list(valid_carry)
+         net_after_carry = 0.0
+diff --git a/src/aftertaxi/lab/strategy_builder/signal_runner.py b/src/aftertaxi/lab/strategy_builder/signal_runner.py
+index 1e9c127..5f3e48f 100644
+--- a/src/aftertaxi/lab/strategy_builder/signal_runner.py
++++ b/src/aftertaxi/lab/strategy_builder/signal_runner.py
+@@ -2,7 +2,7 @@
+ """
+ lab/strategy_builder/signal_runner.py — 동적 비중 백테스트 실행기
+ ================================================================
+-코어 엔진(core/runner.py)을 수정하지 않고, 같은 부품(ledger, settlement)을
++코어 엔진(core/runner.py)을 수정하지 않고, 같은 부품(engine_steps)을
+ 재조립해서 월별 비중 변경을 지원한다.
+ 
+ 설계 원칙:
+@@ -13,15 +13,10 @@ lab/strategy_builder/signal_runner.py — 동적 비중 백테스트 실행기
+ 
+ 의존 관계:
+   lab/strategy_builder/signal_runner.py
+-    → core/ledger.py (AccountLedger)
+-    → core/settlement.py (settle_year_end, settle_final)
++    → core/engine_steps.py (public 빌딩 블록)
++    → core/settlement.py (settle_final)
+     → core/allocation.py (AllocationPlanner)
+     → core/contracts.py (dataclasses)
+-    → core/runner.py (step functions, aggregate — private API 사용)
+-
+-NOTE: core/runner.py의 private 함수를 import한다.
+-      runner 내부 변경 시 이 모듈의 테스트가 깨진다.
+-      이것은 의도적: 코어 변경의 파급 범위를 테스트로 감지.
+ """
+ from __future__ import annotations
+ 
+@@ -31,25 +26,28 @@ import numpy as np
+ import pandas as pd
+ 
+ from aftertaxi.core.contracts import (
+-    AccountConfig, AccountSummary, AccountType, BacktestConfig,
+-    EngineResult, PersonSummary, RebalanceMode, StrategyConfig, TaxSummary,
++    AccountConfig, AccountType, BacktestConfig,
++    EngineResult, RebalanceMode, StrategyConfig,
+ )
+ from aftertaxi.core.ledger import AccountLedger
+-from aftertaxi.core.settlement import settle_year_end, settle_final
++from aftertaxi.core.settlement import settle_final
+ from aftertaxi.core.allocation import AllocationPlanner
+ 
+-# runner의 재사용 가능한 부품 import (private이지만 의도적 소비)
+-from aftertaxi.core.runner import (
+-    _build_fx_lookup,
+-    _get_fx_rate,
+-    _step_mark_to_market,
+-    _step_year_boundary,
+-    _step_dividends,
+-    _step_record,
+-    _execute_contribution_only,
+-    _execute_full_rebalance,
+-    _drift_exceeds_threshold,
+-    _aggregate,
++# engine_steps의 public API 직접 사용 (runner private 의존 해소)
++from aftertaxi.core.engine_steps import (
++    build_fx_lookup,
++    get_fx_rate,
++    create_ledgers,
++    snapshot_tax,
++    record_tax_delta,
++    step_mark_to_market,
++    step_year_boundary,
++    step_dividends,
++    step_record,
++    execute_contribution_only,
++    execute_full_rebalance,
++    drift_exceeds_threshold,
++    aggregate,
+     DUST_PCT,
+ )
+ 
+@@ -82,35 +80,10 @@ def run_signal_backtest(
+     index = prices.index
+     n = config.n_months if config.n_months else len(index) - config.start_index
+     start = config.start_index
+-    fx_lookup = _build_fx_lookup(fx_rates)
+-
+-    # ── 계좌 생성 (core runner와 동일) ──
+-    ledgers: Dict[str, AccountLedger] = {}
+-    for ac in config.accounts:
+-        is_taxable = ac.account_type == AccountType.TAXABLE
+-        ledgers[ac.account_id] = AccountLedger(
+-            account_id=ac.account_id,
+-            account_type=ac.account_type.value,
+-            tax_rate=ac.tax_config.capital_gains_rate if is_taxable else 0.0,
+-            annual_exemption=ac.tax_config.annual_exemption if is_taxable else 0.0,
+-            isa_exempt_limit=(
+-                ac.tax_config.isa_exempt_limit
+-                if ac.account_type == AccountType.ISA else 0.0
+-            ),
+-            isa_excess_rate=(
+-                ac.tax_config.capital_gains_rate
+-                if ac.account_type == AccountType.ISA else 0.0
+-            ),
+-            transaction_cost_bps=ac.transaction_cost_bps,
+-            journal=journal,
+-            progressive_brackets=(
+-                ac.tax_config.progressive_brackets if is_taxable else None
+-            ),
+-            progressive_threshold=(
+-                ac.tax_config.progressive_threshold
+-                if is_taxable else 20_000_000.0
+-            ),
+-        )
++    fx_lookup = build_fx_lookup(fx_rates)
++
++    # ── 계좌 생성 (runner 팩토리 공유) ──
++    ledgers = create_ledgers(config, journal=journal)
+ 
+     planner = AllocationPlanner(config.accounts)
+     total_contribution = sum(ac.monthly_contribution for ac in config.accounts)
+@@ -126,16 +99,16 @@ def run_signal_backtest(
+ 
+         dt = index[i]
+         price_map = {k: v for k, v in prices.iloc[i].to_dict().items() if v == v}
+-        fx_rate = _get_fx_rate(dt, fx_lookup)
++        fx_rate = get_fx_rate(dt, fx_lookup)
+ 
+-        _step_mark_to_market(ledgers, price_map)
++        step_mark_to_market(ledgers, price_map)
+ 
+-        current_year, year_tax = _step_year_boundary(
++        current_year, year_tax = step_year_boundary(
+             ledgers, current_year, dt, fx_rate, config.enable_health_insurance)
+         if year_tax is not None:
+             annual_tax_history.append(year_tax)
+ 
+-        _step_dividends(ledgers, config.dividend_schedule, step, price_map, fx_rate)
++        step_dividends(ledgers, config.dividend_schedule, step, price_map, fx_rate)
+ 
+         # ── 핵심 차이: 동적 비중 ──
+         if step < len(weight_schedule):
+@@ -151,45 +124,23 @@ def run_signal_backtest(
+             step=step, rebal_every=config.strategy.rebalance_every,
+             price_map=price_map, fx_rate=fx_rate)
+ 
+-        _step_record(ledgers)
++        step_record(ledgers)
+ 
+-    # ── 최종 청산 (core runner와 동일) ──
++    # ── 최종 청산 (runner 헬퍼 공유) ──
+     final_i = min(start + n - 1, len(index) - 1)
+     final_dt = index[final_i]
+     final_prices = {
+         k: v for k, v in prices.iloc[final_i].to_dict().items() if v == v
+     }
+-    final_fx = _get_fx_rate(final_dt, fx_lookup)
+-
+-    pre_cgt = sum(l._capital_gains_tax_assessed_krw for l in ledgers.values())
+-    pre_div = sum(l._dividend_tax_assessed_krw for l in ledgers.values())
+-    pre_hi = sum(l._health_insurance_assessed_krw for l in ledgers.values())
++    final_fx = get_fx_rate(final_dt, fx_lookup)
+ 
++    before = snapshot_tax(ledgers)
+     settle_final(ledgers, final_dt.year, final_prices, final_fx,
+                  enable_health_insurance=config.enable_health_insurance)
++    after = snapshot_tax(ledgers)
++    record_tax_delta(annual_tax_history, before, after, final_dt.year)
+ 
+-    post_cgt = sum(l._capital_gains_tax_assessed_krw for l in ledgers.values())
+-    post_div = sum(l._dividend_tax_assessed_krw for l in ledgers.values())
+-    post_hi = sum(l._health_insurance_assessed_krw for l in ledgers.values())
+-    final_tax = {
+-        "year": final_dt.year,
+-        "cgt_krw": post_cgt - pre_cgt,
+-        "dividend_tax_krw": post_div - pre_div,
+-        "health_insurance_krw": post_hi - pre_hi,
+-        "total_krw": (
+-            (post_cgt - pre_cgt) + (post_div - pre_div) + (post_hi - pre_hi)
+-        ),
+-    }
+-    if final_tax["total_krw"] > 0:
+-        existing = [h for h in annual_tax_history if h["year"] == final_dt.year]
+-        if existing:
+-            for k in ["cgt_krw", "dividend_tax_krw", "health_insurance_krw",
+-                       "total_krw"]:
+-                existing[0][k] += final_tax[k]
+-        else:
+-            annual_tax_history.append(final_tax)
+-
+-    return _aggregate(ledgers, final_fx, annual_tax_history)
++    return aggregate(ledgers, final_fx, annual_tax_history)
+ 
+ 
+ # ══════════════════════════════════════════════
+@@ -230,21 +181,21 @@ def _step_deposit_and_rebalance_dynamic(
+             ledger.deposit(order.deposit, fx_rate)
+ 
+         if order.rebalance_mode == RebalanceMode.FULL and order.should_rebalance:
+-            _execute_full_rebalance(
++            execute_full_rebalance(
+                 ledger, order.target_weights, price_map, fx_rate)
+         elif (order.rebalance_mode == RebalanceMode.BAND
+               and order.should_rebalance):
+-            if _drift_exceeds_threshold(
++            if drift_exceeds_threshold(
+                 ledger, order.target_weights, price_map,
+                 order.band_threshold_pct,
+             ):
+-                _execute_full_rebalance(
++                execute_full_rebalance(
+                     ledger, order.target_weights, price_map, fx_rate)
+             else:
+-                _execute_contribution_only(
++                execute_contribution_only(
+                     ledger, order.target_weights, price_map, fx_rate)
+         else:
+-            _execute_contribution_only(
++            execute_contribution_only(
+                 ledger, order.target_weights, price_map, fx_rate)
+ 
+ 
+diff --git a/tests/test_band_rebalance.py b/tests/test_band_rebalance.py
+index 7c702af..c23b883 100644
+--- a/tests/test_band_rebalance.py
++++ b/tests/test_band_rebalance.py
+@@ -148,10 +148,10 @@ class TestBandEdgeCases:
+ 
+     def test_empty_portfolio_no_crash(self):
+         """포지션 없을 때 drift 체크 안전."""
+-        from aftertaxi.core.runner import _drift_exceeds_threshold
++        from aftertaxi.core.engine_steps import drift_exceeds_threshold
+         from aftertaxi.core.ledger import AccountLedger
+         ledger = AccountLedger("test", "TAXABLE")
+-        assert not _drift_exceeds_threshold(
++        assert not drift_exceeds_threshold(
+             ledger, {"SPY": 0.6, "TLT": 0.4}, {"SPY": 100, "TLT": 50}, 0.05)
+ 
+     def test_three_months(self):
+diff --git a/tests/test_engine_steps.py b/tests/test_engine_steps.py
+new file mode 100644
+index 0000000..45adc38
+--- /dev/null
++++ b/tests/test_engine_steps.py
+@@ -0,0 +1,275 @@
++# -*- coding: utf-8 -*-
++"""
++test_engine_steps.py — engine_steps 빌딩 블록 직접 테스트
++=========================================================
++runner/signal_runner 통합 테스트와 별도로,
++개별 step 함수의 경계 조건을 검증.
++"""
++import numpy as np
++import pandas as pd
++import pytest
++
++from aftertaxi.core.engine_steps import (
++    DUST_PCT,
++    create_ledgers,
++    build_fx_lookup,
++    get_fx_rate,
++    snapshot_tax,
++    record_tax_delta,
++    step_mark_to_market,
++    step_record,
++    drift_exceeds_threshold,
++    execute_contribution_only,
++    execute_full_rebalance,
++    aggregate,
++)
++from aftertaxi.core.ledger import AccountLedger, TaxSnapshot, AnnualTaxRecord
++from aftertaxi.core.contracts import (
++    AccountConfig, AccountType, BacktestConfig, StrategyConfig,
++    make_taxable, make_isa,
++)
++from aftertaxi.core.constants import QTY_EPSILON, AMOUNT_EPSILON_USD
++
++
++# ══════════════════════════════════════════════
++# Fixtures
++# ══════════════════════════════════════════════
++
++def _make_ledger(cash=1000.0, account_id="test"):
++    """테스트용 간단 ledger 생성."""
++    ledger = AccountLedger(account_id=account_id, tax_rate=0.22)
++    ledger.cash_usd = cash
++    return ledger
++
++
++def _make_config(monthly=1000.0):
++    """테스트용 최소 BacktestConfig."""
++    return BacktestConfig(
++        accounts=[make_taxable(monthly=monthly)],
++        strategy=StrategyConfig("test", {"SPY": 1.0}),
++    )
++
++
++# ══════════════════════════════════════════════
++# build_fx_lookup / get_fx_rate
++# ══════════════════════════════════════════════
++
++class TestFxLookup:
++    def test_exact_match(self):
++        dates = pd.date_range("2020-01-01", periods=3, freq="ME")
++        fx = pd.Series([1200, 1250, 1300], index=dates)
++        lookup = build_fx_lookup(fx)
++        assert get_fx_rate(dates[1], lookup) == 1250
++
++    def test_bisect_fallback(self):
++        """정확히 일치하지 않는 날짜 → 가장 가까운 이전 날짜."""
++        dates = pd.date_range("2020-01-31", periods=2, freq="ME")
++        fx = pd.Series([1200, 1300], index=dates)
++        lookup = build_fx_lookup(fx)
++        # 2020-02-15는 dates 사이 → 1200 (2020-01-31 사용)
++        mid = pd.Timestamp("2020-02-15")
++        assert get_fx_rate(mid, lookup) == 1200
++
++    def test_before_first_date(self):
++        """모든 날짜보다 이전 → 첫 번째 값."""
++        dates = pd.date_range("2020-06-01", periods=2, freq="ME")
++        fx = pd.Series([1200, 1300], index=dates)
++        lookup = build_fx_lookup(fx)
++        before = pd.Timestamp("2020-01-01")
++        assert get_fx_rate(before, lookup) == 1200
++
++
++# ══════════════════════════════════════════════
++# snapshot_tax / record_tax_delta
++# ══════════════════════════════════════════════
++
++class TestTaxSnapshot:
++    def test_snapshot_empty_ledgers(self):
++        snap = snapshot_tax({})
++        assert snap.cgt_krw == 0.0
++        assert snap.dividend_tax_krw == 0.0
++
++    def test_snapshot_sums_multiple_ledgers(self):
++        l1 = _make_ledger()
++        l2 = _make_ledger(account_id="test2")
++        l1._capital_gains_tax_assessed_krw = 100
++        l2._capital_gains_tax_assessed_krw = 200
++        snap = snapshot_tax({"a": l1, "b": l2})
++        assert snap.cgt_krw == 300
++
++    def test_diff_returns_annual_tax_record(self):
++        before = TaxSnapshot(cgt_krw=100, dividend_tax_krw=10, health_insurance_krw=0)
++        after = TaxSnapshot(cgt_krw=300, dividend_tax_krw=15, health_insurance_krw=5)
++        rec = after.diff(before, 2024)
++        assert isinstance(rec, AnnualTaxRecord)
++        assert rec.year == 2024
++        assert rec.cgt_krw == 200
++        assert rec.total_krw == 210
++
++    def test_record_tax_delta_appends(self):
++        history = []
++        before = TaxSnapshot(cgt_krw=0)
++        after = TaxSnapshot(cgt_krw=100)
++        record_tax_delta(history, before, after, 2024)
++        assert len(history) == 1
++        assert history[0].year == 2024
++        assert history[0].cgt_krw == 100
++
++    def test_record_tax_delta_merges_same_year(self):
++        history = [AnnualTaxRecord(year=2024, cgt_krw=50, total_krw=50)]
++        before = TaxSnapshot(cgt_krw=0)
++        after = TaxSnapshot(cgt_krw=100)
++        record_tax_delta(history, before, after, 2024)
++        assert len(history) == 1  # 새 entry 안 만듦
++        assert history[0].cgt_krw == 150  # 합산됨
++
++    def test_record_tax_delta_skips_zero(self):
++        history = []
++        before = TaxSnapshot(cgt_krw=100)
++        after = TaxSnapshot(cgt_krw=100)  # 차이 없음
++        record_tax_delta(history, before, after, 2024)
++        assert len(history) == 0
++
++
++# ══════════════════════════════════════════════
++# drift_exceeds_threshold
++# ══════════════════════════════════════════════
++
++class TestDriftExceedsThreshold:
++    def test_empty_portfolio(self):
++        """포지션 없고 cash도 없으면 False (total_value=0)."""
++        ledger = _make_ledger(cash=0)
++        assert not drift_exceeds_threshold(ledger, {"SPY": 1.0}, {"SPY": 100}, 0.05)
++
++    def test_cash_only_has_drift(self):
++        """cash만 있고 포지션 없으면 drift 100% → True."""
++        ledger = _make_ledger(cash=1000)
++        assert drift_exceeds_threshold(ledger, {"SPY": 1.0}, {"SPY": 100}, 0.05)
++
++    def test_within_threshold(self):
++        ledger = _make_ledger()
++        ledger.buy("SPY", 10, 100, 1300)
++        # SPY 100% 목표, 현재도 100% → 괴리 0%
++        assert not drift_exceeds_threshold(
++            ledger, {"SPY": 1.0}, {"SPY": 100}, 0.05)
++
++    def test_exceeds_threshold(self):
++        ledger = _make_ledger(cash=10000)
++        ledger.buy("SPY", 60, 100, 1300)
++        ledger.buy("QQQ", 40, 100, 1300)
++        # SPY 60%, QQQ 40% 보유. 목표: SPY 50%, QQQ 50%
++        # SPY 괴리 = |0.6 - 0.5| = 0.1 > 0.05
++        assert drift_exceeds_threshold(
++            ledger, {"SPY": 0.5, "QQQ": 0.5}, {"SPY": 100, "QQQ": 100}, 0.05)
++
++
++# ══════════════════════════════════════════════
++# execute_contribution_only / execute_full_rebalance
++# ══════════════════════════════════════════════
++
++class TestExecutionPolicies:
++    def test_contribution_only_no_cash(self):
++        """현금 $0 → 매수 없음."""
++        ledger = _make_ledger(cash=0)
++        execute_contribution_only(ledger, {"SPY": 1.0}, {"SPY": 100}, 1300)
++        assert len(ledger.positions) == 0
++
++    def test_contribution_only_buys(self):
++        ledger = _make_ledger(cash=1000)
++        execute_contribution_only(ledger, {"SPY": 1.0}, {"SPY": 100}, 1300)
++        assert "SPY" in ledger.positions
++        assert ledger.positions["SPY"].qty > 0
++
++    def test_contribution_only_zero_price(self):
++        """가격 0인 자산 → 건너뜀."""
++        ledger = _make_ledger(cash=1000)
++        execute_contribution_only(ledger, {"SPY": 1.0}, {"SPY": 0.0}, 1300)
++        assert len(ledger.positions) == 0
++
++    def test_full_rebalance_sells_and_buys(self):
++        ledger = _make_ledger(cash=10000)
++        # SPY, QQQ 각각 매수 후 불균형 상태 만들기
++        ledger.buy("SPY", 80, 100, 1300)
++        ledger.buy("QQQ", 20, 100, 1300)
++        # 현재: SPY 80%, QQQ 20%. 목표: 50/50 → 리밸런싱
++        execute_full_rebalance(
++            ledger, {"SPY": 0.5, "QQQ": 0.5},
++            {"SPY": 100, "QQQ": 100}, 1300)
++        # SPY가 줄고 QQQ가 늘어야 함
++        assert ledger.positions["QQQ"].qty > 20
++
++
++# ══════════════════════════════════════════════
++# aggregate
++# ══════════════════════════════════════════════
++
++class TestAggregate:
++    def test_single_account(self):
++        ledger = _make_ledger(cash=1000)
++        ledger.deposit(1000, 1300)
++        ledger.buy("SPY", 10, 100, 1300)
++        ledger.record_month()
++        result = aggregate({"a": ledger}, 1300.0)
++        assert result.n_accounts == 1
++        assert result.invested_usd > 0
++        assert result.n_months == 1
++
++    def test_empty_ledgers(self):
++        result = aggregate({}, 1300.0)
++        assert result.n_accounts == 0
++        assert result.gross_pv_usd == 0
++
++    def test_annual_tax_history_typed(self):
++        """annual_tax_history에 AnnualTaxRecord 전달 가능."""
++        ledger = _make_ledger(cash=1000)
++        ledger.deposit(1000, 1300)
++        ledger.record_month()
++        history = [AnnualTaxRecord(year=2024, cgt_krw=100, total_krw=100)]
++        result = aggregate({"a": ledger}, 1300.0, annual_tax_history=history)
++        assert len(result.annual_tax_history) == 1
++        assert result.annual_tax_history[0].year == 2024
++
++
++# ══════════════════════════════════════════════
++# create_ledgers
++# ══════════════════════════════════════════════
++
++class TestCreateLedgers:
++    def test_creates_from_config(self):
++        config = _make_config()
++        ledgers = create_ledgers(config)
++        assert len(ledgers) == 1
++        assert "taxable" in ledgers
++
++    def test_isa_account(self):
++        config = BacktestConfig(
++            accounts=[make_isa(monthly=500)],
++            strategy=StrategyConfig("test", {"SPY": 1.0}),
++        )
++        ledgers = create_ledgers(config)
++        ledger = list(ledgers.values())[0]
++        assert ledger.tax_rate == 0.0
++        assert ledger.isa_exempt_limit > 0
++
++    def test_multiple_accounts(self):
++        config = BacktestConfig(
++            accounts=[make_taxable(), make_isa()],
++            strategy=StrategyConfig("test", {"SPY": 1.0}),
++        )
++        ledgers = create_ledgers(config)
++        assert len(ledgers) == 2
++
++
++# ══════════════════════════════════════════════
++# Constants
++# ══════════════════════════════════════════════
++
++class TestConstants:
++    def test_qty_epsilon_is_tiny(self):
++        assert QTY_EPSILON < 1e-10
++
++    def test_amount_epsilon_is_tiny(self):
++        assert AMOUNT_EPSILON_USD < 1e-6
++
++    def test_dust_pct_is_small(self):
++        assert 0 < DUST_PCT < 0.01

@@ -22,6 +22,7 @@ analysis/random_lab.py — 랜덤 허상 실험실
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -29,6 +30,8 @@ import numpy as np
 import pandas as pd
 
 from aftertaxi.strategies.spec import StrategySpec
+
+logger = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════
@@ -75,6 +78,7 @@ class RandomLabReport:
 
     # ── search budget (정직하게) ──
     n_generated: int = 0
+    n_failed: int = 0                   # 실행 실패 건수 (컴파일/엔진 에러)
     n_after_baseline: int = 0
     n_after_basic: int = 0
     n_after_validation: int = 0
@@ -96,7 +100,8 @@ class RandomLabReport:
             f"랜덤 실험: {self.n_generated}개 생성 → "
             f"{self.n_after_baseline}개 baseline 통과 → "
             f"{self.n_after_basic}개 basic 통과 → "
-            f"{self.n_after_validation}개 validation 통과",
+            f"{self.n_after_validation}개 validation 통과"
+            + (f" (실행 실패 {self.n_failed}건)" if self.n_failed > 0 else ""),
             f"생존율: {self.survival_rate:.1%}  "
             f"(DSR n_trials={self.n_generated})",
             f"Baseline (SPY B&H): {self.baseline_mult:.3f}x 세후",
@@ -323,8 +328,10 @@ def run_random_lab(
                     "tax_drag_pct": attr.tax_drag_pct,
                     "name": spec.name,
                 })
-        except Exception:
+        except Exception as e:
             all_mults.append(0.0)  # 실행 실패 = 사망
+            report.n_failed += 1
+            logger.warning("random_lab 전략 실행 실패: %s (%s)", spec.name, e)
 
     report.all_mults = np.array(all_mults)
     report.n_after_baseline = len(candidates_after_baseline)
@@ -339,14 +346,28 @@ def run_random_lab(
     report.n_after_basic = len(candidates_after_basic)
 
     # ── 5. Statistical validation gate (DSR with honest n_trials) ──
+    # 월 납입액 추출 (deposit 오염 보정용)
+    # base_account_payload의 accounts에서 총 월 납입액 계산
+    _total_monthly_deposit = sum(
+        a.get("monthly_contribution", 0)
+        for a in base_account_payload.get("accounts", [])
+    )
+
     survivors = []
     for cand in candidates_after_basic:
         result = cand["result"]
-        # 세후 월간 초과수익률 계산
         monthly_values = result.monthly_values
         if len(monthly_values) < 3:
             continue
-        monthly_returns = np.diff(monthly_values) / monthly_values[:-1]
+
+        # 수익률 계산: deposit 오염 근사 보정
+        # monthly_values는 deposit 후 가치이므로 diff에 deposit이 포함됨.
+        # 근사 보정: diff에서 월 납입액을 빼고 수익률 계산.
+        # 정확한 TWR은 아니지만, 절대 Sharpe 부풀림을 크게 줄임.
+        # 상대 비교에서는 동일 deposit이 상쇄되므로 보정 전후 순위 동일.
+        raw_diff = np.diff(monthly_values)
+        adjusted_diff = raw_diff - _total_monthly_deposit
+        monthly_returns = adjusted_diff / monthly_values[:-1]
 
         stat_checks = run_statistical_checks(
             monthly_returns,
@@ -354,10 +375,11 @@ def run_random_lab(
             benchmark_sharpe=0.0,
         )
 
-        # DSR check 찾기
+        # DSR check: 대소문자 주의 (statistical.py는 "dsr" 소문자 반환)
+        # DSR은 PASS/WARN만 반환 (FAIL 없음). PASS가 아니면 탈락.
         dsr_pass = True
         for check in stat_checks:
-            if "DSR" in check.name and check.grade == Grade.FAIL:
+            if check.name == "dsr" and check.grade != Grade.PASS:
                 dsr_pass = False
                 break
 

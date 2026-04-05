@@ -313,12 +313,21 @@ def run_validated_strategy(
     # 3. Advisor 2.0 — 종합 판단
     advisor_v2_report = None
     try:
-        from aftertaxi.analysis.krw_attribution import build_krw_attribution
-        from aftertaxi.analysis.tax_interpretation import interpret_tax_structure
         from aftertaxi.advisor.advisor_v2 import build_advisor_v2
 
-        krw = build_krw_attribution(out.result)
-        tax = interpret_tax_structure(out.result, out.config)
+        # FIX: run_strategy()가 이미 계산한 krw_attribution과 tax_structure_report를 재사용.
+        # 이전 코드는 build_krw_attribution(), interpret_tax_structure()를 다시 호출해서
+        # 동일 연산을 이중으로 수행했음.
+        krw = out.krw_attribution
+        tax = out.tax_structure_report
+
+        # run_strategy에서 실패했으면(None) 여기서 다시 시도
+        if krw is None:
+            from aftertaxi.analysis.krw_attribution import build_krw_attribution
+            krw = build_krw_attribution(out.result)
+        if tax is None:
+            from aftertaxi.analysis.tax_interpretation import interpret_tax_structure
+            tax = interpret_tax_structure(out.result, out.config)
 
         # ISA 최적화 (선택적)
         isa_report = None

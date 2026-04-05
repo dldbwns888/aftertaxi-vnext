@@ -1,0 +1,264 @@
+diff --git a/src/aftertaxi/analysis/random_lab.py b/src/aftertaxi/analysis/random_lab.py
+index 43bf108..5914876 100644
+--- a/src/aftertaxi/analysis/random_lab.py
++++ b/src/aftertaxi/analysis/random_lab.py
+@@ -22,6 +22,7 @@ analysis/random_lab.py — 랜덤 허상 실험실
+ """
+ from __future__ import annotations
+ 
++import logging
+ from dataclasses import dataclass, field
+ from typing import Dict, List, Optional, Tuple
+ 
+@@ -30,6 +31,8 @@ import pandas as pd
+ 
+ from aftertaxi.strategies.spec import StrategySpec
+ 
++logger = logging.getLogger(__name__)
++
+ 
+ # ══════════════════════════════════════════════
+ # DTO
+@@ -75,6 +78,7 @@ class RandomLabReport:
+ 
+     # ── search budget (정직하게) ──
+     n_generated: int = 0
++    n_failed: int = 0                   # 실행 실패 건수 (컴파일/엔진 에러)
+     n_after_baseline: int = 0
+     n_after_basic: int = 0
+     n_after_validation: int = 0
+@@ -96,7 +100,8 @@ class RandomLabReport:
+             f"랜덤 실험: {self.n_generated}개 생성 → "
+             f"{self.n_after_baseline}개 baseline 통과 → "
+             f"{self.n_after_basic}개 basic 통과 → "
+-            f"{self.n_after_validation}개 validation 통과",
++            f"{self.n_after_validation}개 validation 통과"
++            + (f" (실행 실패 {self.n_failed}건)" if self.n_failed > 0 else ""),
+             f"생존율: {self.survival_rate:.1%}  "
+             f"(DSR n_trials={self.n_generated})",
+             f"Baseline (SPY B&H): {self.baseline_mult:.3f}x 세후",
+@@ -323,8 +328,10 @@ def run_random_lab(
+                     "tax_drag_pct": attr.tax_drag_pct,
+                     "name": spec.name,
+                 })
+-        except Exception:
++        except Exception as e:
+             all_mults.append(0.0)  # 실행 실패 = 사망
++            report.n_failed += 1
++            logger.warning("random_lab 전략 실행 실패: %s (%s)", spec.name, e)
+ 
+     report.all_mults = np.array(all_mults)
+     report.n_after_baseline = len(candidates_after_baseline)
+@@ -339,14 +346,28 @@ def run_random_lab(
+     report.n_after_basic = len(candidates_after_basic)
+ 
+     # ── 5. Statistical validation gate (DSR with honest n_trials) ──
++    # 월 납입액 추출 (deposit 오염 보정용)
++    # base_account_payload의 accounts에서 총 월 납입액 계산
++    _total_monthly_deposit = sum(
++        a.get("monthly_contribution", 0)
++        for a in base_account_payload.get("accounts", [])
++    )
++
+     survivors = []
+     for cand in candidates_after_basic:
+         result = cand["result"]
+-        # 세후 월간 초과수익률 계산
+         monthly_values = result.monthly_values
+         if len(monthly_values) < 3:
+             continue
+-        monthly_returns = np.diff(monthly_values) / monthly_values[:-1]
++
++        # 수익률 계산: deposit 오염 근사 보정
++        # monthly_values는 deposit 후 가치이므로 diff에 deposit이 포함됨.
++        # 근사 보정: diff에서 월 납입액을 빼고 수익률 계산.
++        # 정확한 TWR은 아니지만, 절대 Sharpe 부풀림을 크게 줄임.
++        # 상대 비교에서는 동일 deposit이 상쇄되므로 보정 전후 순위 동일.
++        raw_diff = np.diff(monthly_values)
++        adjusted_diff = raw_diff - _total_monthly_deposit
++        monthly_returns = adjusted_diff / monthly_values[:-1]
+ 
+         stat_checks = run_statistical_checks(
+             monthly_returns,
+@@ -354,10 +375,11 @@ def run_random_lab(
+             benchmark_sharpe=0.0,
+         )
+ 
+-        # DSR check 찾기
++        # DSR check: 대소문자 주의 (statistical.py는 "dsr" 소문자 반환)
++        # DSR은 PASS/WARN만 반환 (FAIL 없음). PASS가 아니면 탈락.
+         dsr_pass = True
+         for check in stat_checks:
+-            if "DSR" in check.name and check.grade == Grade.FAIL:
++            if check.name == "dsr" and check.grade != Grade.PASS:
+                 dsr_pass = False
+                 break
+ 
+diff --git a/src/aftertaxi/apps/service.py b/src/aftertaxi/apps/service.py
+index ffbe0bf..89ebbba 100644
+--- a/src/aftertaxi/apps/service.py
++++ b/src/aftertaxi/apps/service.py
+@@ -313,12 +313,21 @@ def run_validated_strategy(
+     # 3. Advisor 2.0 — 종합 판단
+     advisor_v2_report = None
+     try:
+-        from aftertaxi.analysis.krw_attribution import build_krw_attribution
+-        from aftertaxi.analysis.tax_interpretation import interpret_tax_structure
+         from aftertaxi.advisor.advisor_v2 import build_advisor_v2
+ 
+-        krw = build_krw_attribution(out.result)
+-        tax = interpret_tax_structure(out.result, out.config)
++        # FIX: run_strategy()가 이미 계산한 krw_attribution과 tax_structure_report를 재사용.
++        # 이전 코드는 build_krw_attribution(), interpret_tax_structure()를 다시 호출해서
++        # 동일 연산을 이중으로 수행했음.
++        krw = out.krw_attribution
++        tax = out.tax_structure_report
++
++        # run_strategy에서 실패했으면(None) 여기서 다시 시도
++        if krw is None:
++            from aftertaxi.analysis.krw_attribution import build_krw_attribution
++            krw = build_krw_attribution(out.result)
++        if tax is None:
++            from aftertaxi.analysis.tax_interpretation import interpret_tax_structure
++            tax = interpret_tax_structure(out.result, out.config)
+ 
+         # ISA 최적화 (선택적)
+         isa_report = None
+diff --git a/src/aftertaxi/core/allocation.py b/src/aftertaxi/core/allocation.py
+index b057467..333325f 100644
+--- a/src/aftertaxi/core/allocation.py
++++ b/src/aftertaxi/core/allocation.py
+@@ -79,6 +79,11 @@ class AllocationPlanner:
+             monthly = min(acct.monthly_contribution, remaining)
+ 
+             # annual_cap 확인 (KRW cap, KRW ytd → USD room)
++            # 의도된 동작: annual_cap은 KRW 기준(예: ISA 2천만 원)이고,
++            # monthly_contribution은 USD이므로 환율(fx_rate)로 변환.
++            # FX가 매월 변하면 같은 USD 납입액이라도 KRW 한도 대비
++            # 여유분이 달라짐 — 이는 실제 한국 ISA 제도와 일치하는 의도된 동작.
++            # (환율 상승 → 같은 USD가 더 큰 KRW → 더 빨리 한도 도달)
+             if acct.annual_cap is not None and fx_rate > 0:
+                 ytd_krw = ytd_contributions.get(acct.account_id, 0.0)
+                 room_krw = max(0.0, acct.annual_cap - ytd_krw)
+diff --git a/src/aftertaxi/core/contracts.py b/src/aftertaxi/core/contracts.py
+index c156f84..9082db0 100644
+--- a/src/aftertaxi/core/contracts.py
++++ b/src/aftertaxi/core/contracts.py
+@@ -256,6 +256,36 @@ class EngineResult:
+             return self.mult_pre_tax
+         return (self.net_pv_krw / self.reporting_fx_rate) / self.invested_usd
+ 
++    @property
++    def true_pre_tax_mult(self) -> float:
++        """진정한 세전 배수: 세금을 한 번도 안 냈다면의 가상 PV / invested.
++
++        기존 mult_pre_tax는 이름과 달리 세금 납부 후 gross를 사용하므로
++        mult_after_tax와 수식이 동일(unpaid=0일 때).
++        이 프로퍼티는 total_paid_tax를 역으로 더해서 진짜 세전 가치를 복원.
++        """
++        if self.invested_usd <= 0 or self.reporting_fx_rate <= 0:
++            return 0.0
++        # gross_pv_usd는 이미 세금 납부로 줄어든 값.
++        # 총 납부 세금을 USD로 환산해서 더하면 세전 가치 복원.
++        paid_tax_usd = self.tax.total_paid_krw / self.reporting_fx_rate
++        return (self.gross_pv_usd + paid_tax_usd) / self.invested_usd
++
++    @property
++    def tax_cost_pct(self) -> float:
++        """세금이 세전 가치 대비 몇 %를 가져갔는지.
++
++        기존 tax_drag는 unpaid 기준이라 최종 청산 후 항상 0.
++        이 프로퍼티는 total_assessed(납부 포함) 기준으로 실제 세금 비용을 표시.
++        """
++        if self.reporting_fx_rate <= 0:
++            return 0.0
++        paid_tax_usd = self.tax.total_paid_krw / self.reporting_fx_rate
++        pre_tax_pv = self.gross_pv_usd + paid_tax_usd
++        if pre_tax_pv <= 0:
++            return 0.0
++        return paid_tax_usd / pre_tax_pv
++
+     @property
+     def tax_drag(self) -> float:
+         if self.gross_pv_krw <= 0:
+diff --git a/src/aftertaxi/core/ledger.py b/src/aftertaxi/core/ledger.py
+index 184bccf..98c7b0c 100644
+--- a/src/aftertaxi/core/ledger.py
++++ b/src/aftertaxi/core/ledger.py
+@@ -269,9 +269,12 @@ class AccountLedger:
+         self.cumulative_dividend_withholding_usd += withholding_usd
+ 
+         if reinvest and px_usd > 0:
+-            # 재투자: net으로 같은 자산 매수 (fee 적용)
+-            reinvest_qty = net_usd / px_usd
+-            # 직접 position에 추가 (fee는 여기선 적용 안 함 — 배당 재투자는 별도)
++            # FIX: buy()가 transaction_cost_bps를 적용하므로,
++            # reinvest_qty 계산 시 fee를 미리 고려해야 현금 부족 분기에 안 빠짐.
++            # 이전 코드는 net_usd/px_usd로 qty를 계산했지만 buy()가 fee를 추가 요구해서
++            # 의도보다 적게 재투자되는 버그가 있었음.
++            effective_cost = net_usd / (1 + self.transaction_cost_bps / 10_000)
++            reinvest_qty = effective_cost / px_usd
+             self.cash_usd += net_usd
+             self.buy(asset, reinvest_qty, px_usd, fx_rate)
+         else:
+@@ -407,8 +410,17 @@ class AccountLedger:
+     def settle_annual_tax(self, current_year: int = 0) -> float:
+         """연말 양도세 정산. get → compute → apply 패턴.
+ 
+-        직접 호출 시 하위 호환 유지 (settlement 경유 권장).
++        .. deprecated::
++            settlement.py가 get_cgt_inputs() → compute → apply_cgt_result()를
++            직접 중재하므로 이 convenience wrapper는 사용되지 않음.
++            새 코드에서는 settlement.settle_year_end()을 사용할 것.
+         """
++        import warnings
++        warnings.warn(
++            "settle_annual_tax()는 dead code입니다. "
++            "settlement.settle_year_end()을 사용하세요.",
++            DeprecationWarning, stacklevel=2,
++        )
+         from aftertaxi.core.tax_engine import compute_capital_gains_tax
+         inputs = self.get_cgt_inputs(current_year)
+         result = compute_capital_gains_tax(**inputs)
+@@ -447,7 +459,19 @@ class AccountLedger:
+     # ── ISA 만기 정산 ──
+ 
+     def settle_isa(self) -> float:
+-        """ISA 만기 정산. get → compute → apply 패턴."""
++        """ISA 만기 정산. get → compute → apply 패턴.
++
++        .. deprecated::
++            settlement.py가 get_isa_inputs() → compute → apply_isa_result()를
++            직접 중재하므로 이 wrapper는 사용되지 않음.
++            새 코드에서는 settlement.settle_final()을 사용할 것.
++        """
++        import warnings
++        warnings.warn(
++            "settle_isa()는 dead code입니다. "
++            "settlement.settle_final()을 사용하세요.",
++            DeprecationWarning, stacklevel=2,
++        )
+         if self.isa_exempt_limit <= 0:
+             return 0.0
+         from aftertaxi.core.tax_engine import compute_isa_settlement
+@@ -477,7 +501,19 @@ class AccountLedger:
+     # ── 배당소득세 정산 ──
+ 
+     def settle_dividend_tax(self, fx_rate: float) -> float:
+-        """연간 배당소득세 정산. get → compute → apply 패턴."""
++        """연간 배당소득세 정산. get → compute → apply 패턴.
++
++        .. deprecated::
++            settlement.py가 get_dividend_tax_inputs() → compute →
++            apply_dividend_tax_result()를 직접 중재하므로 이 wrapper는 사용되지 않음.
++            새 코드에서는 settlement.settle_year_end()을 사용할 것.
++        """
++        import warnings
++        warnings.warn(
++            "settle_dividend_tax()는 dead code입니다. "
++            "settlement.settle_year_end()을 사용하세요.",
++            DeprecationWarning, stacklevel=2,
++        )
+         if self.annual_dividend_gross_usd < AMOUNT_EPSILON_USD:
+             return 0.0
+         from aftertaxi.core.tax_engine import compute_dividend_tax
