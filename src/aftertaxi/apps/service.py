@@ -12,10 +12,13 @@ apps/service.py — 앱 서비스 레이어
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, TYPE_CHECKING
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from aftertaxi.core.contracts import BacktestConfig, EngineResult
@@ -123,7 +126,7 @@ def run_strategy(
                 )
                 baseline_result = run_backtest(bl_cfg, returns=returns, prices=prices, fx_rates=fx_rates)
             except Exception:
-                pass
+                logger.warning("baseline 실행 실패", exc_info=True)
 
     # 4. Advisor
     adv_input = build_advisor_input(result, attribution, config,
@@ -150,17 +153,17 @@ def run_strategy(
         from aftertaxi.analysis.interpret import interpret_result
         interpretation_text = interpret_result(result, attribution)
     except Exception:
-        pass
+        logger.warning("interpret_result 실패", exc_info=True)
     try:
         from aftertaxi.analysis.krw_attribution import build_krw_attribution
         krw_report = build_krw_attribution(result)
     except Exception:
-        pass
+        logger.warning("build_krw_attribution 실패", exc_info=True)
     try:
         from aftertaxi.analysis.tax_interpretation import interpret_tax_structure
         tax_report = interpret_tax_structure(result, config)
     except Exception:
-        pass
+        logger.warning("interpret_tax_structure 실패", exc_info=True)
 
     # 6. Memory
     run_id = ""
@@ -183,7 +186,7 @@ def run_strategy(
                 data_source=data_source,
             )
         except Exception:
-            pass
+            logger.warning("memory.record 실패 — 실행 기록 유실 가능", exc_info=True)
 
     return RunOutput(
         result=result,
@@ -305,7 +308,7 @@ def run_validated_strategy(
             grade = vr.grade if hasattr(vr, "grade") else ""
             passed = vr.passed if hasattr(vr, "passed") else True
     except Exception:
-        pass
+        logger.warning("validation 실행 실패", exc_info=True)
 
     # 3. Advisor 2.0 — 종합 판단
     advisor_v2_report = None
@@ -330,7 +333,7 @@ def run_validated_strategy(
                     isa_pct_range=[0, 0.5, 1.0],  # 빠른 3점 스캔
                 )
             except Exception:
-                pass
+                logger.warning("ISA 최적화 실패", exc_info=True)
 
         advisor_v2_report = build_advisor_v2(
             result=out.result,
@@ -343,7 +346,7 @@ def run_validated_strategy(
             baseline_result=out.baseline_result,
         )
     except Exception:
-        pass
+        logger.warning("advisor_v2 빌드 실패", exc_info=True)
 
     return ValidatedRunOutput(
         run=out,

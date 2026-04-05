@@ -16,22 +16,40 @@ PR 2: C/O 단일 경로. 월 루프 + 세금 정산 + 최종 청산.
   2. settle (마지막 연도)
   3. ISA settle (해당 시)
   4. pay_tax
+
+빌딩 블록은 core/engine_steps.py에 정의.
+이 모듈은 고정 비중 실행기(run_engine)만 제공.
 """
 from __future__ import annotations
 
-import bisect
-from typing import Dict, List, Optional
+from typing import Dict
 
-import numpy as np
 import pandas as pd
 
 from aftertaxi.core.contracts import (
-    AccountConfig, AccountSummary, AccountType, BacktestConfig,
-    EngineResult, PersonSummary, RebalanceMode, TaxSummary,
+    BacktestConfig, EngineResult, RebalanceMode,
 )
 from aftertaxi.core.ledger import AccountLedger
-from aftertaxi.core.settlement import settle_year_end, settle_final
+from aftertaxi.core.settlement import settle_final
 from aftertaxi.core.allocation import AllocationPlanner
+
+# ── 빌딩 블록 import (engine_steps가 single source of truth) ──
+from aftertaxi.core.engine_steps import (
+    DUST_PCT,
+    create_ledgers,
+    build_fx_lookup,
+    get_fx_rate,
+    snapshot_tax,
+    record_tax_delta,
+    step_mark_to_market,
+    step_year_boundary,
+    step_dividends,
+    step_record,
+    execute_contribution_only,
+    execute_full_rebalance,
+    drift_exceeds_threshold,
+    aggregate,
+)
 
 
 def run_engine(
@@ -43,38 +61,24 @@ def run_engine(
     """FX-only 백테스트 실행.
 
     월 루프는 5개 step 함수로 분해:
-      _step_mark_to_market → _step_year_boundary → _step_dividends
-      → _step_deposit_and_rebalance → _step_record
+      step_mark_to_market → step_year_boundary → step_dividends
+      → _step_deposit_and_rebalance → step_record
     순서 변경 금지. 의미론 변경 금지. 구조 추출만.
     """
     index = prices.index
     n = config.n_months if config.n_months else len(index) - config.start_index
     start = config.start_index
-    fx_lookup = _build_fx_lookup(fx_rates)
+    fx_lookup = build_fx_lookup(fx_rates)
 
     # ── 계좌 생성 ──
-    ledgers: Dict[str, AccountLedger] = {}
-    for ac in config.accounts:
-        is_taxable = ac.account_type == AccountType.TAXABLE
-        ledgers[ac.account_id] = AccountLedger(
-            account_id=ac.account_id,
-            account_type=ac.account_type.value,
-            tax_rate=ac.tax_config.capital_gains_rate if is_taxable else 0.0,
-            annual_exemption=ac.tax_config.annual_exemption if is_taxable else 0.0,
-            isa_exempt_limit=ac.tax_config.isa_exempt_limit if ac.account_type == AccountType.ISA else 0.0,
-            isa_excess_rate=ac.tax_config.capital_gains_rate if ac.account_type == AccountType.ISA else 0.0,
-            transaction_cost_bps=ac.transaction_cost_bps,
-            journal=journal,
-            progressive_brackets=ac.tax_config.progressive_brackets if is_taxable else None,
-            progressive_threshold=ac.tax_config.progressive_threshold if is_taxable else 20_000_000.0,
-        )
+    ledgers = create_ledgers(config, journal=journal)
 
     planner = AllocationPlanner(config.accounts)
     total_contribution = sum(ac.monthly_contribution for ac in config.accounts)
 
     # ── 월 루프 ──
     current_year = index[start].year if start < len(index) else None
-    annual_tax_history = []  # 연도별 세금 분해
+    annual_tax_history = []
 
     for step in range(n):
         i = start + step
@@ -83,16 +87,16 @@ def run_engine(
 
         dt = index[i]
         price_map = {k: v for k, v in prices.iloc[i].to_dict().items() if v == v}
-        fx_rate = _get_fx_rate(dt, fx_lookup)
+        fx_rate = get_fx_rate(dt, fx_lookup)
 
-        _step_mark_to_market(ledgers, price_map)
+        step_mark_to_market(ledgers, price_map)
 
-        current_year, year_tax = _step_year_boundary(
+        current_year, year_tax = step_year_boundary(
             ledgers, current_year, dt, fx_rate, config.enable_health_insurance)
         if year_tax is not None:
             annual_tax_history.append(year_tax)
 
-        _step_dividends(ledgers, config.dividend_schedule, step, price_map, fx_rate)
+        step_dividends(ledgers, config.dividend_schedule, step, price_map, fx_rate)
 
         _step_deposit_and_rebalance(
             ledgers, planner, config.accounts,
@@ -101,118 +105,26 @@ def run_engine(
             step=step, rebal_every=config.strategy.rebalance_every,
             price_map=price_map, fx_rate=fx_rate)
 
-        _step_record(ledgers)
+        step_record(ledgers)
 
     # ── 최종 청산 ──
     final_i = min(start + n - 1, len(index) - 1)
     final_dt = index[final_i]
     final_prices = {k: v for k, v in prices.iloc[final_i].to_dict().items() if v == v}
-    final_fx = _get_fx_rate(final_dt, fx_lookup)
+    final_fx = get_fx_rate(final_dt, fx_lookup)
 
-    # 최종 청산 전 스냅샷
-    pre_cgt = sum(l._capital_gains_tax_assessed_krw for l in ledgers.values())
-    pre_div = sum(l._dividend_tax_assessed_krw for l in ledgers.values())
-    pre_hi = sum(l._health_insurance_assessed_krw for l in ledgers.values())
-
+    before = snapshot_tax(ledgers)
     settle_final(ledgers, final_dt.year, final_prices, final_fx,
                  enable_health_insurance=config.enable_health_insurance)
+    after = snapshot_tax(ledgers)
+    record_tax_delta(annual_tax_history, before, after, final_dt.year)
 
-    # 최종 청산분 기록
-    post_cgt = sum(l._capital_gains_tax_assessed_krw for l in ledgers.values())
-    post_div = sum(l._dividend_tax_assessed_krw for l in ledgers.values())
-    post_hi = sum(l._health_insurance_assessed_krw for l in ledgers.values())
-    final_tax = {
-        "year": final_dt.year,
-        "cgt_krw": post_cgt - pre_cgt,
-        "dividend_tax_krw": post_div - pre_div,
-        "health_insurance_krw": post_hi - pre_hi,
-        "total_krw": (post_cgt - pre_cgt) + (post_div - pre_div) + (post_hi - pre_hi),
-    }
-    if final_tax["total_krw"] > 0:
-        # 같은 연도 entry가 이미 있으면 합산
-        existing = [h for h in annual_tax_history if h["year"] == final_dt.year]
-        if existing:
-            for k in ["cgt_krw", "dividend_tax_krw", "health_insurance_krw", "total_krw"]:
-                existing[0][k] += final_tax[k]
-        else:
-            annual_tax_history.append(final_tax)
-
-    return _aggregate(ledgers, final_fx, annual_tax_history)
+    return aggregate(ledgers, final_fx, annual_tax_history)
 
 
 # ══════════════════════════════════════════════
-# Step 함수 (순서 변경 금지)
+# Runner-specific step (고정 비중 전용)
 # ══════════════════════════════════════════════
-
-def _step_mark_to_market(
-    ledgers: Dict[str, AccountLedger],
-    price_map: Dict[str, float],
-) -> None:
-    """1. 시가 반영."""
-    for ledger in ledgers.values():
-        ledger.mark_to_market(price_map)
-
-
-def _step_year_boundary(
-    ledgers: Dict[str, AccountLedger],
-    current_year: int,
-    dt: pd.Timestamp,
-    fx_rate: float,
-    enable_health_insurance: bool,
-) -> tuple:
-    """2. 연도 전환 → 세금 정산. Returns: (갱신된 year, tax_snapshot or None)."""
-    if current_year is not None and dt.year != current_year:
-        # 정산 전 스냅샷
-        pre_cgt = sum(l._capital_gains_tax_assessed_krw for l in ledgers.values())
-        pre_div = sum(l._dividend_tax_assessed_krw for l in ledgers.values())
-        pre_hi = sum(l._health_insurance_assessed_krw for l in ledgers.values())
-
-        settle_year_end(ledgers, current_year, fx_rate,
-                       enable_health_insurance=enable_health_insurance)
-
-        # 정산 후 차이 = 이번 연도 세금
-        post_cgt = sum(l._capital_gains_tax_assessed_krw for l in ledgers.values())
-        post_div = sum(l._dividend_tax_assessed_krw for l in ledgers.values())
-        post_hi = sum(l._health_insurance_assessed_krw for l in ledgers.values())
-
-        year_tax = {
-            "year": current_year,
-            "cgt_krw": post_cgt - pre_cgt,
-            "dividend_tax_krw": post_div - pre_div,
-            "health_insurance_krw": post_hi - pre_hi,
-            "total_krw": (post_cgt - pre_cgt) + (post_div - pre_div) + (post_hi - pre_hi),
-        }
-
-        for ledger in ledgers.values():
-            ledger.annual_contribution_usd = 0.0
-            ledger.annual_contribution_krw = 0.0
-        return dt.year, year_tax
-    return current_year, None
-
-
-def _step_dividends(
-    ledgers: Dict[str, AccountLedger],
-    div_schedule,
-    step: int,
-    price_map: Dict[str, float],
-    fx_rate: float,
-) -> None:
-    """2.5. 배당 처리."""
-    if div_schedule is None or not div_schedule.is_dividend_month(step):
-        return
-    for ledger in ledgers.values():
-        for asset in list(ledger.positions.keys()):
-            event = div_schedule.create_event(asset, price_map.get(asset, 0))
-            if event is not None:
-                ledger.apply_dividend(
-                    asset=event.asset,
-                    gross_per_share=event.gross_per_share_usd,
-                    withholding_rate=event.withholding_rate,
-                    fx_rate=fx_rate,
-                    reinvest=event.reinvest,
-                    px_usd=price_map.get(asset, 0),
-                )
-
 
 def _step_deposit_and_rebalance(
     ledgers: Dict[str, AccountLedger],
@@ -244,231 +156,12 @@ def _step_deposit_and_rebalance(
             ledger.deposit(order.deposit, fx_rate)
 
         if order.rebalance_mode == RebalanceMode.FULL and order.should_rebalance:
-            _execute_full_rebalance(ledger, order.target_weights, price_map, fx_rate)
+            execute_full_rebalance(ledger, order.target_weights, price_map, fx_rate)
         elif order.rebalance_mode == RebalanceMode.BAND and order.should_rebalance:
-            if _drift_exceeds_threshold(ledger, order.target_weights, price_map,
-                                         order.band_threshold_pct):
-                _execute_full_rebalance(ledger, order.target_weights, price_map, fx_rate)
+            if drift_exceeds_threshold(ledger, order.target_weights, price_map,
+                                       order.band_threshold_pct):
+                execute_full_rebalance(ledger, order.target_weights, price_map, fx_rate)
             else:
-                _execute_contribution_only(ledger, order.target_weights, price_map, fx_rate)
+                execute_contribution_only(ledger, order.target_weights, price_map, fx_rate)
         else:
-            _execute_contribution_only(ledger, order.target_weights, price_map, fx_rate)
-
-
-def _step_record(ledgers: Dict[str, AccountLedger]) -> None:
-    """5. 월말 기록."""
-    for ledger in ledgers.values():
-        ledger.record_month()
-
-
-def _build_fx_lookup(fx_rates: pd.Series) -> tuple:
-    """환율 Series → (dict, sorted_dates) 사전 구축. O(n) 1회."""
-    fx_dict = {ts: float(v) for ts, v in fx_rates.items()}
-    sorted_dates = sorted(fx_dict.keys())
-    return fx_dict, sorted_dates
-
-
-def _get_fx_rate(dt: pd.Timestamp, fx_lookup: tuple) -> float:
-    """O(1) dict lookup + O(log n) bisect fallback."""
-    fx_dict, sorted_dates = fx_lookup
-    if dt in fx_dict:
-        return fx_dict[dt]
-    # bisect: 가장 가까운 이전 날짜
-    idx = bisect.bisect_right(sorted_dates, dt) - 1
-    if idx >= 0:
-        return fx_dict[sorted_dates[idx]]
-    return fx_dict[sorted_dates[0]]
-
-
-def _aggregate(ledgers: Dict[str, AccountLedger], reporting_fx: float,
-               annual_tax_history: list = None) -> EngineResult:
-    """전 계좌 통합 결과."""
-    account_summaries = []
-    total_pv = 0.0
-    total_inv = 0.0
-    total_assessed = 0.0
-    total_unpaid = 0.0
-    combined_monthly = None
-
-    for ledger in ledgers.values():
-        s = ledger.summary()
-        account_summaries.append(AccountSummary(
-            account_id=s["account_id"],
-            account_type=s["account_type"],
-            gross_pv_usd=s["gross_pv_usd"],
-            invested_usd=s["invested_usd"],
-            tax_assessed_krw=s["tax_assessed_krw"],
-            tax_unpaid_krw=s["tax_unpaid_krw"],
-            mdd=s["mdd"],
-            n_months=s["n_months"],
-            transaction_cost_usd=s["transaction_cost_usd"],
-            dividend_gross_usd=s["dividend_gross_usd"],
-            dividend_withholding_usd=s["dividend_withholding_usd"],
-            capital_gains_tax_krw=s["capital_gains_tax_krw"],
-            dividend_tax_krw=s["dividend_tax_krw"],
-            health_insurance_krw=s["health_insurance_krw"],
-        ))
-        total_pv += s["gross_pv_usd"]
-        total_inv += s["invested_usd"]
-        total_assessed += s["tax_assessed_krw"]
-        total_unpaid += s["tax_unpaid_krw"]
-
-        mv = s["monthly_values"]
-        if combined_monthly is None:
-            combined_monthly = mv.copy()
-        else:
-            min_len = min(len(combined_monthly), len(mv))
-            combined_monthly = combined_monthly[:min_len] + mv[:min_len]
-
-    if combined_monthly is not None and len(combined_monthly) > 0:
-        peak = np.maximum.accumulate(np.where(combined_monthly > 0, combined_monthly, 1.0))
-        mdd = float((combined_monthly / peak - 1.0).min())
-    else:
-        mdd = 0.0
-
-    n_months = max(len(l.monthly_values) for l in ledgers.values()) if ledgers else 0
-
-    gross_krw = total_pv * reporting_fx
-    net_krw = gross_krw - total_unpaid
-
-    # person-scope: 계좌 합산 (authority)
-    person = PersonSummary(
-        health_insurance_krw=sum(a.health_insurance_krw for a in account_summaries),
-    )
-
-    return EngineResult(
-        gross_pv_usd=total_pv,
-        invested_usd=total_inv,
-        gross_pv_krw=gross_krw,
-        net_pv_krw=net_krw,
-        reporting_fx_rate=reporting_fx,
-        mdd=mdd,
-        n_months=n_months,
-        n_accounts=len(ledgers),
-        tax=TaxSummary(
-            total_assessed_krw=total_assessed,
-            total_unpaid_krw=total_unpaid,
-            total_paid_krw=total_assessed - total_unpaid,
-        ),
-        accounts=account_summaries,
-        person=person,
-        monthly_values=combined_monthly if combined_monthly is not None else np.array([]),
-        annual_tax_history=annual_tax_history or [],
-    )
-
-
-# ══════════════════════════════════════════════
-# 실행 정책
-# ══════════════════════════════════════════════
-
-DUST_PCT = 0.001  # 포트폴리오 대비 0.1% 미만 거래 무시
-
-
-def _drift_exceeds_threshold(
-    ledger: AccountLedger,
-    target_weights: Dict[str, float],
-    price_map: Dict[str, float],
-    threshold_pct: float,
-) -> bool:
-    """현재 비중이 목표에서 threshold 이상 벗어났는지 확인.
-
-    BAND 모드에서 FULL 리밸 트리거 판단용.
-    하나라도 초과 → True (전체 FULL 리밸).
-    """
-    total_value = ledger.total_value_usd()
-    if total_value <= 0:
-        return False  # 아직 포지션 없음 → C/O
-
-    for asset, target_w in target_weights.items():
-        pos = ledger.positions.get(asset)
-        px = price_map.get(asset, 0.0)
-        actual_value = pos.qty * px if pos and px > 0 else 0.0
-        actual_w = actual_value / total_value
-        if abs(actual_w - target_w) > threshold_pct:
-            return True
-
-    return False
-
-
-def _execute_contribution_only(
-    ledger: AccountLedger,
-    target_weights: Dict[str, float],
-    price_map: Dict[str, float],
-    fx_rate: float,
-) -> None:
-    """C/O: 새 돈만 target weights 비례로 매수. 매도 없음."""
-    cash = ledger.cash_usd
-    if cash <= 1.0:
-        return
-
-    tw_sum = sum(target_weights.values())
-    if tw_sum <= 0:
-        return
-
-    min_alloc = max(1.0, cash * DUST_PCT)
-    for asset, tw in target_weights.items():
-        alloc = cash * (tw / tw_sum)
-        if alloc <= min_alloc:
-            continue
-        px = price_map.get(asset, 0.0)
-        if px <= 0:
-            continue
-        buy_qty = alloc / px
-        if buy_qty > 1e-12:
-            ledger.buy(asset, buy_qty, px, fx_rate)
-
-
-def _execute_full_rebalance(
-    ledger: AccountLedger,
-    target_weights: Dict[str, float],
-    price_map: Dict[str, float],
-    fx_rate: float,
-) -> None:
-    """FULL: 목표비중으로 매도 먼저 → 매수."""
-    total_value = ledger.total_value_usd()
-    if total_value <= 0:
-        return
-
-    # 현재 시가
-    current_mv: Dict[str, float] = {}
-    for asset, pos in ledger.positions.items():
-        if pos.qty > 1e-12:
-            px = price_map.get(asset, 0.0)
-            current_mv[asset] = pos.qty * px
-
-    # 목표 시가 (weights 정규화 — C/O와 동일하게 100% 투자)
-    tw_sum = sum(target_weights.values())
-    if tw_sum <= 0:
-        return
-    desired: Dict[str, float] = {a: total_value * (w / tw_sum) for a, w in target_weights.items()}
-
-    # delta 계산
-    all_assets = set(list(current_mv.keys()) + list(desired.keys()))
-    deltas = {a: desired.get(a, 0.0) - current_mv.get(a, 0.0) for a in all_assets}
-
-    # 1. 매도 먼저 (현금 확보)
-    min_trade = max(1.0, total_value * DUST_PCT)
-    for asset, delta in deltas.items():
-        if delta < -min_trade:
-            px = price_map.get(asset, 0.0)
-            if px <= 0:
-                continue
-            pos = ledger.positions.get(asset)
-            if pos is None or pos.qty < 1e-12:
-                continue
-            sell_qty = min(abs(delta) / px, pos.qty)
-            if sell_qty > 1e-12:
-                ledger.sell(asset, sell_qty, px, fx_rate)
-
-    # 2. 매수 (available cash 범위 내)
-    for asset, delta in deltas.items():
-        if delta > min_trade:
-            px = price_map.get(asset, 0.0)
-            if px <= 0:
-                continue
-            buy_amount = min(delta, ledger.cash_usd)
-            if buy_amount <= min_trade:
-                continue
-            buy_qty = buy_amount / px
-            if buy_qty > 1e-12:
-                ledger.buy(asset, buy_qty, px, fx_rate)
+            execute_contribution_only(ledger, order.target_weights, price_map, fx_rate)

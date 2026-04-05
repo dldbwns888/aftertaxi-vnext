@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple
 
+from aftertaxi.core.constants import AMOUNT_EPSILON_KRW
+
 
 # ══════════════════════════════════════════════
 # 결과 객체 (풍부한 반환값)
@@ -124,7 +126,7 @@ def compute_capital_gains_tax(
     for yr, amt in carryforward:
         if current_year > 0 and yr > 0 and (current_year - yr) >= carry_expiry_years:
             continue
-        if amt > 1e-6:
+        if amt > AMOUNT_EPSILON_KRW:
             valid_carry.append((yr, amt))
 
     # 2. 상쇄 처리
@@ -143,12 +145,12 @@ def compute_capital_gains_tax(
             remaining_net -= offset
             carryforward_used.append((yr, offset))
             remainder = amt - offset
-            if remainder > 1e-6:
+            if remainder > AMOUNT_EPSILON_KRW:
                 carryforward_remaining.append((yr, remainder))
         net_after_carry = remaining_net
     else:
         # 순손실 → 올해 손실 이월 + 기존 carry 유지
-        if abs(net) > 1e-6:
+        if abs(net) > AMOUNT_EPSILON_KRW:
             new_loss_carry.append((current_year, abs(net)))
         carryforward_remaining = list(valid_carry)
         net_after_carry = 0.0

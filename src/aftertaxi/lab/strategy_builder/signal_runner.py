@@ -2,7 +2,7 @@
 """
 lab/strategy_builder/signal_runner.py — 동적 비중 백테스트 실행기
 ================================================================
-코어 엔진(core/runner.py)을 수정하지 않고, 같은 부품(ledger, settlement)을
+코어 엔진(core/runner.py)을 수정하지 않고, 같은 부품(engine_steps)을
 재조립해서 월별 비중 변경을 지원한다.
 
 설계 원칙:
@@ -13,15 +13,10 @@ lab/strategy_builder/signal_runner.py — 동적 비중 백테스트 실행기
 
 의존 관계:
   lab/strategy_builder/signal_runner.py
-    → core/ledger.py (AccountLedger)
-    → core/settlement.py (settle_year_end, settle_final)
+    → core/engine_steps.py (public 빌딩 블록)
+    → core/settlement.py (settle_final)
     → core/allocation.py (AllocationPlanner)
     → core/contracts.py (dataclasses)
-    → core/runner.py (step functions, aggregate — private API 사용)
-
-NOTE: core/runner.py의 private 함수를 import한다.
-      runner 내부 변경 시 이 모듈의 테스트가 깨진다.
-      이것은 의도적: 코어 변경의 파급 범위를 테스트로 감지.
 """
 from __future__ import annotations
 
@@ -31,25 +26,28 @@ import numpy as np
 import pandas as pd
 
 from aftertaxi.core.contracts import (
-    AccountConfig, AccountSummary, AccountType, BacktestConfig,
-    EngineResult, PersonSummary, RebalanceMode, StrategyConfig, TaxSummary,
+    AccountConfig, AccountType, BacktestConfig,
+    EngineResult, RebalanceMode, StrategyConfig,
 )
 from aftertaxi.core.ledger import AccountLedger
-from aftertaxi.core.settlement import settle_year_end, settle_final
+from aftertaxi.core.settlement import settle_final
 from aftertaxi.core.allocation import AllocationPlanner
 
-# runner의 재사용 가능한 부품 import (private이지만 의도적 소비)
-from aftertaxi.core.runner import (
-    _build_fx_lookup,
-    _get_fx_rate,
-    _step_mark_to_market,
-    _step_year_boundary,
-    _step_dividends,
-    _step_record,
-    _execute_contribution_only,
-    _execute_full_rebalance,
-    _drift_exceeds_threshold,
-    _aggregate,
+# engine_steps의 public API 직접 사용 (runner private 의존 해소)
+from aftertaxi.core.engine_steps import (
+    build_fx_lookup,
+    get_fx_rate,
+    create_ledgers,
+    snapshot_tax,
+    record_tax_delta,
+    step_mark_to_market,
+    step_year_boundary,
+    step_dividends,
+    step_record,
+    execute_contribution_only,
+    execute_full_rebalance,
+    drift_exceeds_threshold,
+    aggregate,
     DUST_PCT,
 )
 
@@ -82,35 +80,10 @@ def run_signal_backtest(
     index = prices.index
     n = config.n_months if config.n_months else len(index) - config.start_index
     start = config.start_index
-    fx_lookup = _build_fx_lookup(fx_rates)
+    fx_lookup = build_fx_lookup(fx_rates)
 
-    # ── 계좌 생성 (core runner와 동일) ──
-    ledgers: Dict[str, AccountLedger] = {}
-    for ac in config.accounts:
-        is_taxable = ac.account_type == AccountType.TAXABLE
-        ledgers[ac.account_id] = AccountLedger(
-            account_id=ac.account_id,
-            account_type=ac.account_type.value,
-            tax_rate=ac.tax_config.capital_gains_rate if is_taxable else 0.0,
-            annual_exemption=ac.tax_config.annual_exemption if is_taxable else 0.0,
-            isa_exempt_limit=(
-                ac.tax_config.isa_exempt_limit
-                if ac.account_type == AccountType.ISA else 0.0
-            ),
-            isa_excess_rate=(
-                ac.tax_config.capital_gains_rate
-                if ac.account_type == AccountType.ISA else 0.0
-            ),
-            transaction_cost_bps=ac.transaction_cost_bps,
-            journal=journal,
-            progressive_brackets=(
-                ac.tax_config.progressive_brackets if is_taxable else None
-            ),
-            progressive_threshold=(
-                ac.tax_config.progressive_threshold
-                if is_taxable else 20_000_000.0
-            ),
-        )
+    # ── 계좌 생성 (runner 팩토리 공유) ──
+    ledgers = create_ledgers(config, journal=journal)
 
     planner = AllocationPlanner(config.accounts)
     total_contribution = sum(ac.monthly_contribution for ac in config.accounts)
@@ -126,16 +99,16 @@ def run_signal_backtest(
 
         dt = index[i]
         price_map = {k: v for k, v in prices.iloc[i].to_dict().items() if v == v}
-        fx_rate = _get_fx_rate(dt, fx_lookup)
+        fx_rate = get_fx_rate(dt, fx_lookup)
 
-        _step_mark_to_market(ledgers, price_map)
+        step_mark_to_market(ledgers, price_map)
 
-        current_year, year_tax = _step_year_boundary(
+        current_year, year_tax = step_year_boundary(
             ledgers, current_year, dt, fx_rate, config.enable_health_insurance)
         if year_tax is not None:
             annual_tax_history.append(year_tax)
 
-        _step_dividends(ledgers, config.dividend_schedule, step, price_map, fx_rate)
+        step_dividends(ledgers, config.dividend_schedule, step, price_map, fx_rate)
 
         # ── 핵심 차이: 동적 비중 ──
         if step < len(weight_schedule):
@@ -151,45 +124,23 @@ def run_signal_backtest(
             step=step, rebal_every=config.strategy.rebalance_every,
             price_map=price_map, fx_rate=fx_rate)
 
-        _step_record(ledgers)
+        step_record(ledgers)
 
-    # ── 최종 청산 (core runner와 동일) ──
+    # ── 최종 청산 (runner 헬퍼 공유) ──
     final_i = min(start + n - 1, len(index) - 1)
     final_dt = index[final_i]
     final_prices = {
         k: v for k, v in prices.iloc[final_i].to_dict().items() if v == v
     }
-    final_fx = _get_fx_rate(final_dt, fx_lookup)
+    final_fx = get_fx_rate(final_dt, fx_lookup)
 
-    pre_cgt = sum(l._capital_gains_tax_assessed_krw for l in ledgers.values())
-    pre_div = sum(l._dividend_tax_assessed_krw for l in ledgers.values())
-    pre_hi = sum(l._health_insurance_assessed_krw for l in ledgers.values())
-
+    before = snapshot_tax(ledgers)
     settle_final(ledgers, final_dt.year, final_prices, final_fx,
                  enable_health_insurance=config.enable_health_insurance)
+    after = snapshot_tax(ledgers)
+    record_tax_delta(annual_tax_history, before, after, final_dt.year)
 
-    post_cgt = sum(l._capital_gains_tax_assessed_krw for l in ledgers.values())
-    post_div = sum(l._dividend_tax_assessed_krw for l in ledgers.values())
-    post_hi = sum(l._health_insurance_assessed_krw for l in ledgers.values())
-    final_tax = {
-        "year": final_dt.year,
-        "cgt_krw": post_cgt - pre_cgt,
-        "dividend_tax_krw": post_div - pre_div,
-        "health_insurance_krw": post_hi - pre_hi,
-        "total_krw": (
-            (post_cgt - pre_cgt) + (post_div - pre_div) + (post_hi - pre_hi)
-        ),
-    }
-    if final_tax["total_krw"] > 0:
-        existing = [h for h in annual_tax_history if h["year"] == final_dt.year]
-        if existing:
-            for k in ["cgt_krw", "dividend_tax_krw", "health_insurance_krw",
-                       "total_krw"]:
-                existing[0][k] += final_tax[k]
-        else:
-            annual_tax_history.append(final_tax)
-
-    return _aggregate(ledgers, final_fx, annual_tax_history)
+    return aggregate(ledgers, final_fx, annual_tax_history)
 
 
 # ══════════════════════════════════════════════
@@ -230,21 +181,21 @@ def _step_deposit_and_rebalance_dynamic(
             ledger.deposit(order.deposit, fx_rate)
 
         if order.rebalance_mode == RebalanceMode.FULL and order.should_rebalance:
-            _execute_full_rebalance(
+            execute_full_rebalance(
                 ledger, order.target_weights, price_map, fx_rate)
         elif (order.rebalance_mode == RebalanceMode.BAND
               and order.should_rebalance):
-            if _drift_exceeds_threshold(
+            if drift_exceeds_threshold(
                 ledger, order.target_weights, price_map,
                 order.band_threshold_pct,
             ):
-                _execute_full_rebalance(
+                execute_full_rebalance(
                     ledger, order.target_weights, price_map, fx_rate)
             else:
-                _execute_contribution_only(
+                execute_contribution_only(
                     ledger, order.target_weights, price_map, fx_rate)
         else:
-            _execute_contribution_only(
+            execute_contribution_only(
                 ledger, order.target_weights, price_map, fx_rate)
 
 

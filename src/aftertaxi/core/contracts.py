@@ -19,6 +19,7 @@ from typing import Dict, List, Literal, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from aftertaxi.core.dividend import DividendSchedule
+    from aftertaxi.core.ledger import AnnualTaxRecord
 
 import numpy as np
 
@@ -219,8 +220,7 @@ class EngineResult:
     monthly_values: np.ndarray  # 월별 합산 PV (USD)
 
     # ── 연도별 세금 분해 ──
-    annual_tax_history: List[Dict] = field(default_factory=list)
-    # [{year, cgt_krw, dividend_tax_krw, health_insurance_krw, total_krw}, ...]
+    annual_tax_history: List["AnnualTaxRecord"] = field(default_factory=list)
 
     def __post_init__(self):
         """생성 시 불변식 검증."""

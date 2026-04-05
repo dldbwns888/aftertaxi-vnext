@@ -17,6 +17,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from aftertaxi.core.constants import QTY_EPSILON, AMOUNT_EPSILON_USD, AMOUNT_EPSILON_KRW
+
 
 # ══════════════════════════════════════════════
 # Position
@@ -32,11 +34,109 @@ class Position:
 
     @property
     def avg_cost_usd(self) -> float:
-        return self.cost_basis_usd / self.qty if self.qty > 1e-12 else 0.0
+        return self.cost_basis_usd / self.qty if self.qty > QTY_EPSILON else 0.0
 
     @property
     def avg_cost_krw(self) -> float:
-        return self.cost_basis_krw / self.qty if self.qty > 1e-12 else 0.0
+        return self.cost_basis_krw / self.qty if self.qty > QTY_EPSILON else 0.0
+
+
+# ══════════════════════════════════════════════
+# Tax Snapshot (캡슐화된 세금 상태 조회)
+# ══════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class TaxSnapshot:
+    """세금 항목별 누적 부과액 스냅샷.
+
+    runner/signal_runner가 정산 전후 차이를 계산할 때 사용.
+    Ledger의 private 필드를 직접 접근하지 않고 이 객체를 통해 조회.
+    """
+    cgt_krw: float = 0.0
+    dividend_tax_krw: float = 0.0
+    health_insurance_krw: float = 0.0
+
+    def diff(self, before: "TaxSnapshot", year: int) -> "AnnualTaxRecord":
+        """before 스냅샷과의 차이를 연간 세금 레코드로 반환."""
+        cgt = self.cgt_krw - before.cgt_krw
+        div = self.dividend_tax_krw - before.dividend_tax_krw
+        hi = self.health_insurance_krw - before.health_insurance_krw
+        return AnnualTaxRecord(
+            year=year,
+            cgt_krw=cgt,
+            dividend_tax_krw=div,
+            health_insurance_krw=hi,
+            total_krw=cgt + div + hi,
+        )
+
+
+@dataclass
+class AnnualTaxRecord:
+    """연간 세금 분해 레코드.
+
+    annual_tax_history의 원소 타입.
+    dict-style 접근 지원 (pd.DataFrame 하위호환).
+    """
+    year: int = 0
+    cgt_krw: float = 0.0
+    dividend_tax_krw: float = 0.0
+    health_insurance_krw: float = 0.0
+    total_krw: float = 0.0
+
+    _FIELDS = ("year", "cgt_krw", "dividend_tax_krw", "health_insurance_krw", "total_krw")
+
+    def __getitem__(self, key: str):
+        """dict-style 접근. pd.DataFrame / 기존 코드 하위호환."""
+        try:
+            return getattr(self, key)
+        except AttributeError:
+            raise KeyError(key)
+
+    def get(self, key: str, default=None):
+        """dict.get() 하위호환."""
+        try:
+            return getattr(self, key)
+        except AttributeError:
+            return default
+
+    def keys(self):
+        """pd.DataFrame 생성 지원."""
+        return self._FIELDS
+
+    def values(self):
+        """pd.DataFrame 생성 지원."""
+        return tuple(getattr(self, k) for k in self._FIELDS)
+
+
+@dataclass
+class LedgerSummary:
+    """계좌 요약 결과. typed 접근 + dict-style 하위호환.
+
+    runner._aggregate()와 테스트에서 사용.
+    dict-style 접근(`s["key"]`)은 하위호환용이며, 새 코드는 속성 접근 사용.
+    """
+    account_id: str
+    account_type: str
+    gross_pv_usd: float
+    invested_usd: float
+    tax_assessed_krw: float
+    tax_unpaid_krw: float
+    capital_gains_tax_krw: float
+    dividend_tax_krw: float
+    health_insurance_krw: float
+    transaction_cost_usd: float
+    dividend_gross_usd: float
+    dividend_withholding_usd: float
+    mdd: float
+    n_months: int
+    monthly_values: object  # np.ndarray
+
+    def __getitem__(self, key: str):
+        """dict-style 접근 하위호환. 새 코드는 속성 접근 사용."""
+        try:
+            return getattr(self, key)
+        except AttributeError:
+            raise KeyError(key)
 
 
 # ══════════════════════════════════════════════
@@ -121,12 +221,26 @@ class AccountLedger:
     def total_value_usd(self) -> float:
         return self.cash_usd + self.portfolio_value_usd()
 
+    # ── 세금 스냅샷 (캡슐화) ──
+
+    def tax_snapshot(self) -> TaxSnapshot:
+        """현재 세금 항목별 누적 부과액 스냅샷.
+
+        runner가 정산 전후 차이를 구할 때 사용.
+        private 필드 직접 접근 대신 이 메서드를 쓸 것.
+        """
+        return TaxSnapshot(
+            cgt_krw=self._capital_gains_tax_assessed_krw,
+            dividend_tax_krw=self._dividend_tax_assessed_krw,
+            health_insurance_krw=self._health_insurance_assessed_krw,
+        )
+
     # ── 시가 반영 ──
 
     def mark_to_market(self, price_map: Dict[str, float]) -> None:
         """가격 갱신."""
         for asset, pos in self.positions.items():
-            if asset in price_map and pos.qty > 1e-12:
+            if asset in price_map and pos.qty > QTY_EPSILON:
                 pos.market_value_usd = pos.qty * price_map[asset]
 
     # ── 배당 처리 ──
@@ -141,7 +255,7 @@ class AccountLedger:
         3. net을 현금에 추가 (또는 재투자)
         """
         pos = self.positions.get(asset)
-        if pos is None or pos.qty < 1e-12:
+        if pos is None or pos.qty < QTY_EPSILON:
             return 0.0
 
         gross_usd = pos.qty * gross_per_share
@@ -205,7 +319,7 @@ class AccountLedger:
         fee_usd = cost_usd * (self.transaction_cost_bps / 10_000)
         total_cost_usd = cost_usd + fee_usd
 
-        if total_cost_usd > self.cash_usd + 1e-8:
+        if total_cost_usd > self.cash_usd + AMOUNT_EPSILON_USD:
             # 현금 부족 — 가능한 만큼만 (fee 포함)
             available = self.cash_usd
             cost_usd = available / (1 + self.transaction_cost_bps / 10_000)
@@ -240,7 +354,7 @@ class AccountLedger:
         Returns: realized_pnl_krw
         """
         pos = self.positions.get(asset)
-        if pos is None or pos.qty < 1e-12:
+        if pos is None or pos.qty < QTY_EPSILON:
             return 0.0
 
         qty = min(qty, pos.qty)
@@ -285,7 +399,7 @@ class AccountLedger:
         """전 포지션 매도."""
         for asset in list(self.positions.keys()):
             pos = self.positions[asset]
-            if pos.qty > 1e-12 and asset in price_map:
+            if pos.qty > QTY_EPSILON and asset in price_map:
                 self.sell(asset, pos.qty, price_map[asset], fx_rate)
 
     # ── 세금 정산 ──
@@ -364,7 +478,7 @@ class AccountLedger:
 
     def settle_dividend_tax(self, fx_rate: float) -> float:
         """연간 배당소득세 정산. get → compute → apply 패턴."""
-        if self.annual_dividend_gross_usd < 1e-8:
+        if self.annual_dividend_gross_usd < AMOUNT_EPSILON_USD:
             return 0.0
         from aftertaxi.core.tax_engine import compute_dividend_tax
         inputs = self.get_dividend_tax_inputs(fx_rate)
@@ -405,7 +519,7 @@ class AccountLedger:
         건보료는 세금과 별도 버킷이지만, 납부는 unpaid_tax_liability에 합산.
         (실제로는 별도 납부이지만, 엔진에서는 cash drag로 통합 처리)
         """
-        if premium_krw < 1e-8:
+        if premium_krw < AMOUNT_EPSILON_USD:
             return 0.0
 
         self._health_insurance_assessed_krw += premium_krw
@@ -421,7 +535,7 @@ class AccountLedger:
 
     def pay_tax(self, fx_rate: float) -> float:
         """미납 세금을 USD cash에서 차감. Returns: tax_usd."""
-        if self.unpaid_tax_liability_krw < 1e-8 or fx_rate <= 0:
+        if self.unpaid_tax_liability_krw < AMOUNT_EPSILON_USD or fx_rate <= 0:
             return 0.0
         tax_usd = self.unpaid_tax_liability_krw / fx_rate
         self.cash_usd -= tax_usd
@@ -441,7 +555,8 @@ class AccountLedger:
 
     # ── 요약 ──
 
-    def summary(self) -> dict:
+    def summary(self) -> LedgerSummary:
+        """계좌 요약. typed 객체 반환 (dict-style 접근도 하위호환 지원)."""
         mv = np.array(self.monthly_values, dtype=float)
         if len(mv) > 0:
             peak = np.maximum.accumulate(np.where(mv > 0, mv, 1.0))
@@ -449,20 +564,20 @@ class AccountLedger:
         else:
             mdd = 0.0
 
-        return {
-            "account_id": self.account_id,
-            "account_type": self.account_type,
-            "gross_pv_usd": self.total_value_usd(),
-            "invested_usd": self.total_invested_usd,
-            "tax_assessed_krw": self._total_tax_assessed_krw,
-            "tax_unpaid_krw": self.unpaid_tax_liability_krw,
-            "capital_gains_tax_krw": self._capital_gains_tax_assessed_krw,
-            "dividend_tax_krw": self._dividend_tax_assessed_krw,
-            "health_insurance_krw": self._health_insurance_assessed_krw,
-            "transaction_cost_usd": self.total_transaction_cost_usd,
-            "dividend_gross_usd": self.cumulative_dividend_gross_usd,
-            "dividend_withholding_usd": self.cumulative_dividend_withholding_usd,
-            "mdd": mdd,
-            "n_months": len(self.monthly_values),
-            "monthly_values": mv,
-        }
+        return LedgerSummary(
+            account_id=self.account_id,
+            account_type=self.account_type,
+            gross_pv_usd=self.total_value_usd(),
+            invested_usd=self.total_invested_usd,
+            tax_assessed_krw=self._total_tax_assessed_krw,
+            tax_unpaid_krw=self.unpaid_tax_liability_krw,
+            capital_gains_tax_krw=self._capital_gains_tax_assessed_krw,
+            dividend_tax_krw=self._dividend_tax_assessed_krw,
+            health_insurance_krw=self._health_insurance_assessed_krw,
+            transaction_cost_usd=self.total_transaction_cost_usd,
+            dividend_gross_usd=self.cumulative_dividend_gross_usd,
+            dividend_withholding_usd=self.cumulative_dividend_withholding_usd,
+            mdd=mdd,
+            n_months=len(self.monthly_values),
+            monthly_values=mv,
+        )

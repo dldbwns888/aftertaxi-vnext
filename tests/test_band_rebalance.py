@@ -148,10 +148,10 @@ class TestBandEdgeCases:
 
     def test_empty_portfolio_no_crash(self):
         """포지션 없을 때 drift 체크 안전."""
-        from aftertaxi.core.runner import _drift_exceeds_threshold
+        from aftertaxi.core.engine_steps import drift_exceeds_threshold
         from aftertaxi.core.ledger import AccountLedger
         ledger = AccountLedger("test", "TAXABLE")
-        assert not _drift_exceeds_threshold(
+        assert not drift_exceeds_threshold(
             ledger, {"SPY": 0.6, "TLT": 0.4}, {"SPY": 100, "TLT": 50}, 0.05)
 
     def test_three_months(self):
