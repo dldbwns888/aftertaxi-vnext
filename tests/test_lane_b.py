@@ -138,6 +138,7 @@ class TestLaneBLive:
             monthly_usd=1000.0,
             start="2000-01-01",
             end="2023-12-31",
+            source="yfinance",
         )
         assert isinstance(result, EngineResult)
         assert result.n_months >= 200
@@ -159,6 +160,7 @@ class TestLaneBLive:
             weights={"sp500_1x": 1.0},
             synthetic_map={"sp500_1x": SyntheticParams(leverage=1.0, annual_fee=0.0003)},
             monthly_usd=1000.0, start="2010-01-01", end="2022-12-31",
+            source="yfinance",
         )
 
         cal = calibrate_overlap(a, b)

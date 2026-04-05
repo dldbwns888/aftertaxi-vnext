@@ -30,6 +30,45 @@ from aftertaxi.lanes.lane_b.synthetic import (
 # 데이터 로더
 # ══════════════════════════════════════════════
 
+def load_index_data_shiller(
+    start_year: Optional[int] = None,
+    end_year: Optional[int] = None,
+) -> dict:
+    """Shiller 152년 장기 데이터 → Lane B 입력 형식.
+
+    GS10(10년 국채)을 T-bill 대용으로 사용.
+    152년 역사로 롤링 20년 분석이 의미 있어짐.
+
+    Returns
+    -------
+    dict: index_returns, tbill_rate, index_prices, n_months, start_date, end_date
+    """
+    from aftertaxi.loaders.shiller import load_shiller
+
+    data = load_shiller(start_year=start_year, end_year=end_year)
+
+    # Shiller → Lane B 형식 변환
+    sp_ret = data["sp_returns_with_gs10"]   # GS10과 공통 구간
+    gs10 = data["gs10_annual"]              # 연율 decimal
+    sp_prices = data["sp_prices"]
+
+    # 공통 인덱스 정렬
+    common = sp_ret.index.intersection(gs10.index)
+    sp_ret = sp_ret.loc[common]
+    gs10 = gs10.loc[common]
+    sp_prices = sp_prices.reindex(common, method="ffill").dropna()
+
+    return {
+        "index_returns": sp_ret,
+        "tbill_rate": gs10,             # GS10 as financing cost proxy
+        "index_prices": sp_prices,
+        "n_months": len(common),
+        "start_date": common[0],
+        "end_date": common[-1],
+        "source": "shiller",
+    }
+
+
 def load_index_data(
     index_ticker: str = "^SP500TR",
     tbill_ticker: str = "^IRX",
@@ -86,12 +125,14 @@ def run_lane_b(
     weights: Dict[str, float],
     synthetic_map: Dict[str, SyntheticParams],
     monthly_usd: float = 1000.0,
-    start: str = "1987-01-01",
+    start: Optional[str] = None,
     end: Optional[str] = None,
     fx_rate: float = 1300.0,
     index_ticker: str = "^SP500TR",
     tbill_ticker: str = "^IRX",
     strategy_name: str = "lane_b",
+    source: str = "shiller",
+    data: Optional[dict] = None,
 ) -> EngineResult:
     """Lane B 합성 역사 백테스트.
 
@@ -102,8 +143,19 @@ def run_lane_b(
         1x 자산은 SyntheticParams(leverage=1.0, annual_fee=0)
     monthly_usd : 월 납입액 (USD)
     fx_rate : 고정 환율 (합성이므로 실제 FX 불필요, 세금 계산용)
+    source : "shiller" (기본, 152년) 또는 "yfinance" (1987~)
+    start : 시작일. shiller는 "1871" 등 연도 문자열, yfinance는 "1987-01-01" 형식.
+            None이면 source 기본값 사용 (shiller=전체, yfinance="1987-01-01").
+    data : 미리 로드한 데이터 dict (None이면 source에 따라 자동 로드)
     """
-    data = load_index_data(index_ticker, tbill_ticker, start, end)
+    if data is None:
+        if source == "shiller":
+            start_year = int(start[:4]) if start else None
+            end_year = int(end[:4]) if end else None
+            data = load_index_data_shiller(start_year=start_year, end_year=end_year)
+        else:
+            yf_start = start or "1987-01-01"
+            data = load_index_data(index_ticker, tbill_ticker, yf_start, end)
 
     # 합성 수익률 생성
     returns_dict = {}
@@ -217,17 +269,20 @@ def run_lane_b_structural(
     weights: Dict[str, float],
     synthetic_map: Dict[str, SyntheticParams],
     monthly_usd: float = 1000.0,
-    start: str = "1987-01-01",
+    start: Optional[str] = None,
     end: Optional[str] = None,
     fx_rate: float = 1300.0,
     rolling_years: int = 20,
     strategy_name: str = "lane_b_structural",
     index_ticker: str = "^SP500TR",
     tbill_ticker: str = "^IRX",
+    source: str = "shiller",
+    data: Optional[dict] = None,
 ) -> StructuralReport:
     """Lane B 장기 구조 분석.
 
     전체 기간 백테스트 + 롤링 N년 윈도우 배수 분포.
+    source="shiller"(기본)이면 152년 역사, "yfinance"이면 1987~.
     """
     # 전체 기간 실행
     full_result = run_lane_b(
@@ -239,6 +294,8 @@ def run_lane_b_structural(
         strategy_name=strategy_name,
         index_ticker=index_ticker,
         tbill_ticker=tbill_ticker,
+        source=source,
+        data=data,
     )
 
     # 롤링 윈도우 분석
